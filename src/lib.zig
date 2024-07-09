@@ -1,4 +1,5 @@
 const std = @import("std");
+const debug = @import("std").debug.print;
 
 const cki = @cImport({
     @cDefine("CK_PTR", "*");
@@ -8,37 +9,97 @@ const cki = @cImport({
     @cInclude("pkcs11.h");
 });
 
-export fn C_Initialize(args: cki.CK_VOID_PTR) cki.CK_RV {
-    _ = args;
+const fn_list = cki.struct_CK_FUNCTION_LIST{
+    .version = .{ .major = 3, .minor = 0 },
+    .C_Initialize = @ptrCast(&C_Initialize),
+    .C_GetInfo = @ptrCast(&C_GetInfo),
+};
+
+fn criptoki_make_string(comptime str: []const u8) [32]u8 {
+    var ret: [32]u8 = [_]u8{0} ** 32;
+
+    for (str, 0..) |c, i| {
+        if (i == 31) {
+            break;
+        }
+
+        ret[i] = c;
+    }
+
+    return ret;
+}
+
+const manufacturer = criptoki_make_string("safesh");
+const description = criptoki_make_string("Cryptoki Key Retention Service");
+
+// TODO: Define this through the build system.
+const ver_major = 0;
+const ver_minor = 1;
+
+export fn C_Initialize(args: cki.CK_C_INITIALIZE_ARGS_PTR) callconv(.C) cki.CK_RV {
+    debug("C_Initialize {*}\n", .{args});
+
+    if (args == null) {
+        return cki.CKR_OK;
+    }
+
+    // CKF_LIBRARY_CANT_CREATE_OS_THREADS
+    // 0x00000001
+    // True if application threads which are executing calls to the library may not use native operating system calls to spawn new threads; false if they may
+    //
+    // CKF_OS_LOCKING_OK
+    // 0x00000002
+    // True if the library can use the native operation system threading model for locking; false otherwise
+
+    // TODO:
 
     return cki.CKR_OK;
 }
 
-export fn C_Finalize(_: cki.CK_VOID_PTR) cki.CK_RV {
+export fn C_Finalize(_: cki.CK_VOID_PTR) callconv(.C) cki.CK_RV {
+    // TODO:
     return cki.CKR_OK;
 }
 
-export fn C_GetInfo(info: cki.CK_INFO_PTR) cki.CK_RV {
-    _ = info;
+export fn C_GetInfo(info: cki.CK_INFO_PTR) callconv(.C) cki.CK_RV {
+    debug("C_GetInfo {*}\n", .{info});
+
+    if (info == null)
+        return cki.CKR_ARGUMENTS_BAD;
+
+    std.mem.copyForwards(u8, &info.*.manufacturerID, &manufacturer);
+    std.mem.copyForwards(u8, &info.*.libraryDescription, &description);
+
+    // debug("{s}\n", .{@as(*const [32:0]u8, @ptrCast(&manufacturer))});
+    // debug("{s}\n", .{@as(*const [32:0]u8, @ptrCast(&description))});
+
+    info.*.libraryVersion.major = ver_major;
+    info.*.libraryVersion.minor = ver_minor;
+
+    info.*.cryptokiVersion.major = 3;
+    info.*.cryptokiVersion.minor = 0;
 
     return cki.CKR_OK;
 }
 
-export fn C_GetFunctionList(list: [*c][*c]cki.CK_FUNCTION_LIST) cki.CK_RV {
-    _ = list;
+export fn C_GetFunctionList(list: [*c][*c]cki.CK_FUNCTION_LIST) callconv(.C) cki.CK_RV {
+    std.debug.print("C_GetFunctionList {*}\n", .{list});
+
+    list.* = @constCast(&fn_list);
 
     return cki.CKR_OK;
 }
 
-export fn C_GetSlotList(present: cki.CK_BBOOL, slot_list: cki.CK_SLOT_ID_PTR, count: cki.CK_ULONG_PTR) cki.CK_RV {
-    _ = present;
+export fn C_GetSlotList(present: cki.CK_BBOOL, slot_list: cki.CK_SLOT_ID_PTR, count: cki.CK_ULONG_PTR) callconv(.C) cki.CK_RV {
+    std.debug.print("C_GetSlotList preent = {}\n", .{present});
+
     _ = slot_list;
     _ = count;
 
     return cki.CKR_OK;
 }
 
-export fn C_GetSlotInfo(id: cki.CK_SLOT_ID, info: cki.CK_SLOT_INFO_PTR) cki.CK_RV {
+export fn C_GetSlotInfo(id: cki.CK_SLOT_ID, info: cki.CK_SLOT_INFO_PTR) callconv(.C) cki.CK_RV {
     _ = id;
     _ = info;
 
