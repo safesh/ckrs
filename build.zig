@@ -12,6 +12,8 @@ pub fn build(b: *std.Build) void {
     // set a preferred release mode, allowing the user to decide how to optimize.
     const optimize = b.standardOptimizeOption(.{});
 
+    const include_path = b.path("oasis/pkcs11/v300/include/");
+
     const exe = b.addExecutable(.{
         .name = "cryptoki-krs",
         .root_source_file = b.path("src/main.zig"),
@@ -19,12 +21,23 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
 
-    exe.addIncludePath(std.Build.path(b, "oasis/"));
+    exe.addIncludePath(include_path);
+
+    const lib = b.addSharedLibrary(.{
+        .name = "cryptokikrs",
+        .root_source_file = b.path("src/lib.zig"),
+        .pic = true,
+        .target = target,
+        .optimize = optimize,
+    });
+
+    lib.addIncludePath(include_path);
 
     // This declares intent for the executable to be installed into the
     // standard location when the user invokes the "install" step (the default
     // step when running `zig build`).
     b.installArtifact(exe);
+    b.installArtifact(lib);
 
     // This *creates* a Run step in the build graph, to be executed when another
     // step is evaluated that depends on it. The next line below will establish
