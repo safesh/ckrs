@@ -1,6 +1,4 @@
 const std = @import("std");
-const debug = @import("std").debug.print;
-
 const cki = @cImport({
     @cDefine("CK_PTR", "*");
     @cDefine("CK_DECLARE_FUNCTION(returnType, name)", "returnType name");
@@ -8,6 +6,8 @@ const cki = @cImport({
     @cDefine("CK_CALLBACK_FUNCTION(returnType, name)", "returnType (* name)");
     @cInclude("pkcs11.h");
 });
+
+const debug = @import("std").debug.print;
 
 fn make_fn_list(comptime T: type) T {
     const meta = @import("std").meta;
@@ -26,15 +26,16 @@ fn make_fn_list(comptime T: type) T {
     return ret;
 }
 
-pub const fn_list = make_fn_list(cki.struct_CK_FUNCTION_LIST);
+const fn_list = make_fn_list(cki.struct_CK_FUNCTION_LIST);
 
-// FIXME: I don't recall if the PKCS #11 string need to be fully padded or not... (might be a CSP thing only)
-// TODO: Add size
-fn criptoki_make_string(comptime str: []const u8) [32]u8 {
-    var ret: [32]u8 = [_]u8{0} ** 32;
+// FIXME: I don't recall if the PKCS #11 strings need to be fully padded or not... (might be a CSP thing only)
+fn make_padded_string(comptime str: []const u8, comptime size: usize) [size]u8 {
+    if (size < 1) @compileError("size must be greater than 0");
+
+    var ret: [size]u8 = [_]u8{0} ** size;
 
     for (str, 0..) |c, i| {
-        if (i == 31) {
+        if (i == size - 1) {
             break;
         }
 
@@ -44,8 +45,8 @@ fn criptoki_make_string(comptime str: []const u8) [32]u8 {
     return ret;
 }
 
-const manufacturer = criptoki_make_string("safesh");
-const description = criptoki_make_string("Cryptoki Key Retention Service");
+const manufacturer = make_padded_string("safesh", 32);
+const description = make_padded_string("Cryptoki Key Retention Service", 32);
 
 // TODO: Define this through the build system.
 const ver_major = 0;
@@ -85,9 +86,6 @@ export fn C_GetInfo(info: cki.CK_INFO_PTR) callconv(.C) cki.CK_RV {
     std.mem.copyForwards(u8, &info.*.manufacturerID, &manufacturer);
     std.mem.copyForwards(u8, &info.*.libraryDescription, &description);
 
-    // debug("{s}\n", .{@as(*const [32:0]u8, @ptrCast(&manufacturer))});
-    // debug("{s}\n", .{@as(*const [32:0]u8, @ptrCast(&description))});
-
     info.*.libraryVersion.major = ver_major;
     info.*.libraryVersion.minor = ver_minor;
 
@@ -106,17 +104,17 @@ export fn C_GetFunctionList(list: [*c][*c]cki.CK_FUNCTION_LIST) callconv(.C) cki
 }
 
 export fn C_GetSlotList(present: cki.CK_BBOOL, slot_list: cki.CK_SLOT_ID_PTR, count: cki.CK_ULONG_PTR) callconv(.C) cki.CK_RV {
-    std.debug.print("C_GetSlotList preent = {}\n", .{present});
+    debug("C_GetSlotList present = {}, slot_list = {*}, count = {*}\n", .{ present, slot_list, count });
 
-    _ = slot_list;
-    _ = count;
+    // TODO:
 
     return cki.CKR_OK;
 }
 
 export fn C_GetSlotInfo(id: cki.CK_SLOT_ID, info: cki.CK_SLOT_INFO_PTR) callconv(.C) cki.CK_RV {
-    _ = id;
-    _ = info;
+    debug("C_GetSlotInfo id = {}, info = {*}", .{ id, info });
+
+    // TODO:
 
     return cki.CKR_OK;
 }
