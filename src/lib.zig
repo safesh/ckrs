@@ -9,12 +9,27 @@ const cki = @cImport({
     @cInclude("pkcs11.h");
 });
 
-const fn_list = cki.struct_CK_FUNCTION_LIST{
-    .version = .{ .major = 3, .minor = 0 },
-    .C_Initialize = @ptrCast(&C_Initialize),
-    .C_GetInfo = @ptrCast(&C_GetInfo),
-};
+fn make_fn_list(comptime T: type) T {
+    const meta = @import("std").meta;
 
+    var ret: T = undefined;
+
+    inline for (meta.fields(T)) |field| {
+        if (std.mem.eql(u8, field.name, "version")) {
+            @field(ret, field.name).major = 3;
+            @field(ret, field.name).minor = 0;
+        } else {
+            @field(ret, field.name) = @ptrCast(&@field(@This(), field.name));
+        }
+    }
+
+    return ret;
+}
+
+pub const fn_list = make_fn_list(cki.struct_CK_FUNCTION_LIST);
+
+// FIXME: I don't recall if the PKCS #11 string need to be fully padded or not... (might be a CSP thing only)
+// TODO: Add size
 fn criptoki_make_string(comptime str: []const u8) [32]u8 {
     var ret: [32]u8 = [_]u8{0} ** 32;
 
