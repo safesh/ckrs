@@ -106,57 +106,54 @@ export fn C_GetFunctionList(list: [*c][*c]cki.CK_FUNCTION_LIST) callconv(.C) cki
 export fn C_GetSlotList(present: cki.CK_BBOOL, slot_list: cki.CK_SLOT_ID_PTR, count: cki.CK_ULONG_PTR) callconv(.C) cki.CK_RV {
     debug("C_GetSlotList present = {}, slot_list = {*}, count = {*}\n", .{ present, slot_list, count });
 
+    if (slot_list == null) {
+        if (count != null)
+            count.* = 1
+        else
+            return cki.CKR_ARGUMENTS_BAD;
+    } else {
+        slot_list[0] = 1;
+    }
+
     // TODO:
 
     return cki.CKR_OK;
 }
 
 export fn C_GetSlotInfo(id: cki.CK_SLOT_ID, info: cki.CK_SLOT_INFO_PTR) callconv(.C) cki.CK_RV {
-    debug("C_GetSlotInfo id = {}, info = {*}", .{ id, info });
+    debug("C_GetSlotInfo id = {}, info = {*}\n", .{ id, info });
 
-    // TODO:
-
-    return cki.CKR_OK;
+    return cki.CKR_DEVICE_ERROR;
 }
 
 export fn C_GetTokenInfo(id: cki.CK_SLOT_ID, info: cki.CK_TOKEN_INFO_PTR) callconv(.C) cki.CK_RV {
-    _ = id;
-    _ = info;
+    debug("C_GetTokenInfo id = {}, info = {*}\n", .{ id, info });
 
-    return cki.CKR_OK;
+    return cki.CKR_DEVICE_ERROR;
 }
 
 export fn C_GetMechanismList(id: cki.CK_SLOT_ID, mechanisms: cki.CK_MECHANISM_TYPE_PTR, count: cki.CK_ULONG_PTR) callconv(.C) cki.CK_RV {
-    _ = id;
-    _ = mechanisms;
-    _ = count;
+    debug("C_GetMechanismList id = {}, mechanisms = {*}, count = {*}\n", .{ id, mechanisms, count });
 
-    return cki.CKR_OK;
+    return cki.CKR_DEVICE_ERROR;
 }
 
 export fn C_GetMechanismInfo(id: cki.CK_SLOT_ID, kind: cki.CK_MECHANISM_TYPE, info: cki.CK_MECHANISM_INFO_PTR) callconv(.C) cki.CK_RV {
-    _ = id;
-    _ = kind;
-    _ = info;
+    debug("C_GetMechanismInfo id = {}, type = {}, info = {*}\n", .{ id, kind, info });
 
-    return cki.CKR_OK;
+    return cki.CKR_DEVICE_ERROR;
 }
 
 fn C_InitToken(id: cki.CK_SLOT_ID, pin: cki.CK_UTF8CHAR_PTR, len: cki.CK_ULONG, label: cki.CK_UTF8CHAR_PTR) callconv(.C) cki.CK_RV {
-    _ = id;
-    _ = pin;
-    _ = len;
-    _ = label;
+    debug("C_InitToken id = {}, pin = {*}, len = {}, label = {*}\n", .{ id, pin, len, label });
 
-    return cki.CKR_OK;
+    return cki.CKR_DEVICE_ERROR;
 }
 
 export fn C_InitPIN(session: cki.CK_SESSION_HANDLE, pin: cki.CK_UTF8CHAR_PTR, len: cki.CK_ULONG) callconv(.C) cki.CK_RV {
-    _ = session;
-    _ = pin;
-    _ = len;
+    debug("C_InitPIN session = {}, pin = {*}, len = {}\n", .{ session, pin, len });
 
-    return cki.CKR_OK;
+    return cki.CKR_DEVICE_ERROR;
 }
 
 export fn C_SetPIN(session: cki.CK_SESSION_HANDLE, old_pin: cki.CK_UTF8CHAR_PTR, old_len: cki.CK_ULONG, new_pin: cki.CK_UTF8CHAR_PTR, new_len: cki.CK_ULONG) callconv(.C) cki.CK_RV {
