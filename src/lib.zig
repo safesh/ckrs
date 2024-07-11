@@ -7,7 +7,13 @@ const cki = @cImport({
     @cInclude("pkcs11.h");
 });
 
-const debug = @import("std").debug.print;
+const debug = std.debug.print;
+const Allocator = std.mem.Allocator;
+
+var CKRS: struct {
+    initialized: bool = false,
+    session_counter: usize = 0,
+} = .{};
 
 fn make_fn_list(comptime T: type) T {
     const meta = @import("std").meta;
@@ -28,18 +34,15 @@ fn make_fn_list(comptime T: type) T {
 
 const fn_list = make_fn_list(cki.struct_CK_FUNCTION_LIST);
 
-// FIXME: I don't recall if the PKCS #11 strings need to be fully padded or not... (might be a CSP thing only)
 fn make_padded_string(comptime str: []const u8, comptime size: usize) [size]u8 {
     if (size < 1) @compileError("size must be greater than 0");
 
-    var ret: [size]u8 = [_]u8{0} ** size;
+    var ret: [size]u8 = [_]u8{' '} ** size;
 
     for (str, 0..) |c, i| {
-        if (i == size - 1) {
-            break;
-        }
-
         ret[i] = c;
+
+        if (i == size) break;
     }
 
     return ret;
@@ -47,6 +50,7 @@ fn make_padded_string(comptime str: []const u8, comptime size: usize) [size]u8 {
 
 const manufacturer = make_padded_string("safesh", 32);
 const description = make_padded_string("Cryptoki Key Retention Service", 32);
+const slot_description = make_padded_string("Virtual, In Kernel Slot", 64);
 
 // TODO: Define this through the build system.
 const ver_major = 0;
@@ -54,6 +58,8 @@ const ver_minor = 1;
 
 export fn C_Initialize(args: cki.CK_C_INITIALIZE_ARGS_PTR) callconv(.C) cki.CK_RV {
     debug("C_Initialize {*}\n", .{args});
+
+    CKRS.initialized = true;
 
     if (args == null) {
         return cki.CKR_OK;
@@ -73,7 +79,8 @@ export fn C_Initialize(args: cki.CK_C_INITIALIZE_ARGS_PTR) callconv(.C) cki.CK_R
 }
 
 export fn C_Finalize(_: cki.CK_VOID_PTR) callconv(.C) cki.CK_RV {
-    // TODO:
+    debug("C_Finalize\n", .{});
+
     return cki.CKR_OK;
 }
 
@@ -96,7 +103,7 @@ export fn C_GetInfo(info: cki.CK_INFO_PTR) callconv(.C) cki.CK_RV {
 }
 
 export fn C_GetFunctionList(list: [*c][*c]cki.CK_FUNCTION_LIST) callconv(.C) cki.CK_RV {
-    std.debug.print("C_GetFunctionList {*}\n", .{list});
+    debug("C_GetFunctionList {*}\n", .{list});
 
     list.* = @constCast(&fn_list);
 
@@ -115,21 +122,84 @@ export fn C_GetSlotList(present: cki.CK_BBOOL, slot_list: cki.CK_SLOT_ID_PTR, co
         slot_list[0] = 1;
     }
 
-    // TODO:
-
     return cki.CKR_OK;
 }
 
 export fn C_GetSlotInfo(id: cki.CK_SLOT_ID, info: cki.CK_SLOT_INFO_PTR) callconv(.C) cki.CK_RV {
     debug("C_GetSlotInfo id = {}, info = {*}\n", .{ id, info });
 
-    return cki.CKR_DEVICE_ERROR;
+    std.mem.copyForwards(u8, &info.*.manufacturerID, &manufacturer);
+    std.mem.copyForwards(u8, &info.*.slotDescription, &slot_description);
+
+    info.*.hardwareVersion.major = 0;
+    info.*.hardwareVersion.minor = 0;
+
+    info.*.firmwareVersion.major = 0;
+    info.*.firmwareVersion.minor = 1;
+
+    return cki.CKR_OK;
 }
 
 export fn C_GetTokenInfo(id: cki.CK_SLOT_ID, info: cki.CK_TOKEN_INFO_PTR) callconv(.C) cki.CK_RV {
     debug("C_GetTokenInfo id = {}, info = {*}\n", .{ id, info });
 
-    return cki.CKR_DEVICE_ERROR;
+    const memcpy = std.mem.copyForwards;
+
+    // Application-defined label, assigned during token initialization.
+    memcpy(u8, &info.*.label, &make_padded_string("ckrs", 32));
+
+    // ID of the device manufacturer.
+    memcpy(u8, &info.*.manufacturerID, &manufacturer);
+
+    // Model of the device.
+    memcpy(u8, &info.*.model, &make_padded_string("ckrs", 16));
+
+    // Character-string serial number of the device.
+    memcpy(u8, &info.*.serialNumber, &make_padded_string("1303199831031997", 16));
+
+    // Bit flags indicating capabilities and status of the device
+    info.*.flags = if (CKRS.initialized) cki.CKF_TOKEN_INITIALIZED else 0 | cki.CKF_USER_PIN_INITIALIZED | cki.CKF_PROTECTED_AUTHENTICATION_PATH; // TODO:
+
+    // Maximum number of sessions that can be opened with the token at one time by a single application.
+    info.*.ulMaxSessionCount = cki.CK_EFFECTIVELY_INFINITE;
+
+    // Number of sessions that this application currently has open with the token
+    info.*.ulSessionCount = 0; // TODO:
+
+    // Maximum number of read/write sessions that can be opened with the token at one time by a single application
+    info.*.ulMaxRwSessionCount = cki.CK_EFFECTIVELY_INFINITE;
+
+    // Number of read/write sessions that this application currently has open with the token
+    info.*.ulRwSessionCount = 0; // TODO:
+
+    // Maximum length in bytes of the PIN
+    info.*.ulMaxPinLen = 256;
+
+    // Minimum length in bytes of the PIN
+    info.*.ulMinPinLen = 8;
+
+    // The total amount of memory on the token in bytes in which public objects may be stored (see CK_TOKEN_INFO Note below)
+    info.*.ulTotalPublicMemory = 1 << 20;
+
+    // The amount of free (unused) memory on the token in bytes for public objects (see CK_TOKEN_INFO Note below)
+    info.*.ulFreePublicMemory = 1 << 20;
+
+    // The total amount of memory on the token in bytes in which private objects may be stored (see CK_TOKEN_INFO Note below)
+    info.*.ulTotalPrivateMemory = 1 << 20;
+
+    // The amount of free (unused) memory on the token in bytes for private objects (see CK_TOKEN_INFO Note below)
+    info.*.ulFreePrivateMemory = 1 << 20;
+
+    // Version number of hardware
+    info.*.hardwareVersion = .{ .major = 0, .minor = 0 };
+
+    // Version number of firmware
+    info.*.firmwareVersion = .{ .major = 0, .minor = 1 }; // TODO:
+
+    // current time as a character-string of length 16, represented in the format YYYYMMDDhhmmssxx
+    info.*.utcTime = make_padded_string("", 16);
+
+    return cki.CKR_OK;
 }
 
 export fn C_GetMechanismList(id: cki.CK_SLOT_ID, mechanisms: cki.CK_MECHANISM_TYPE_PTR, count: cki.CK_ULONG_PTR) callconv(.C) cki.CK_RV {
@@ -167,32 +237,27 @@ export fn C_SetPIN(session: cki.CK_SESSION_HANDLE, old_pin: cki.CK_UTF8CHAR_PTR,
 }
 
 export fn C_OpenSession(id: cki.CK_SLOT_ID, flags: cki.CK_FLAGS, app: cki.CK_VOID_PTR, notify: cki.CK_NOTIFY, handle: cki.CK_SESSION_HANDLE_PTR) callconv(.C) cki.CK_RV {
-    _ = id;
-    _ = flags;
-    _ = app;
-    _ = notify;
-    _ = handle;
+    debug("C_OpenSession id = {}, flags = {}, app = {*}, notify = {*}, handle = {*}\n", .{ id, flags, app, notify, handle });
 
-    return cki.CKR_OK;
+    return cki.CKR_DEVICE_ERROR;
 }
 
 export fn C_CloseSession(handle: cki.CK_SESSION_HANDLE) callconv(.C) cki.CK_RV {
     _ = handle;
 
-    return cki.CKR_OK;
+    return cki.CKR_DEVICE_ERROR;
 }
 
 export fn C_CloseAllSessions(slot: cki.CK_SLOT_ID) callconv(.C) cki.CK_RV {
     _ = slot;
 
-    return cki.CKR_OK;
+    return cki.CKR_DEVICE_ERROR;
 }
 
 export fn C_GetSessionInfo(handle: cki.CK_SESSION_HANDLE, info: cki.CK_SESSION_INFO_PTR) callconv(.C) cki.CK_RV {
-    _ = handle;
-    _ = info;
+    debug("C_GetSessionInfo handle = {}, info = {*}\n", .{ handle, info });
 
-    return cki.CKR_OK;
+    return cki.CKR_DEVICE_ERROR;
 }
 
 export fn C_GetOperationState(handle: cki.CK_SESSION_HANDLE, state: cki.CK_BYTE_PTR, len: cki.CK_ULONG_PTR) callconv(.C) cki.CK_RV {
@@ -200,7 +265,7 @@ export fn C_GetOperationState(handle: cki.CK_SESSION_HANDLE, state: cki.CK_BYTE_
     _ = state;
     _ = len;
 
-    return cki.CKR_OK;
+    return cki.CKR_DEVICE_ERROR;
 }
 
 export fn C_SetOperationState(handle: cki.CK_SESSION_HANDLE, state: cki.CK_BYTE_PTR, len: cki.CK_ULONG, encryption_key: cki.CK_OBJECT_HANDLE, auth_key: cki.CK_OBJECT_HANDLE) callconv(.C) cki.CK_RV {
@@ -210,7 +275,7 @@ export fn C_SetOperationState(handle: cki.CK_SESSION_HANDLE, state: cki.CK_BYTE_
     _ = encryption_key;
     _ = auth_key;
 
-    return cki.CKR_OK;
+    return cki.CKR_DEVICE_ERROR;
 }
 
 export fn C_Login(handle: cki.CK_SESSION_HANDLE, kind: cki.CK_USER_TYPE, pin: cki.CK_UTF8CHAR_PTR, len: cki.CK_ULONG) callconv(.C) cki.CK_RV {
@@ -219,13 +284,13 @@ export fn C_Login(handle: cki.CK_SESSION_HANDLE, kind: cki.CK_USER_TYPE, pin: ck
     _ = pin;
     _ = len;
 
-    return cki.CKR_OK;
+    return cki.CKR_DEVICE_ERROR;
 }
 
 export fn C_Logout(handle: cki.CK_SESSION_HANDLE) callconv(.C) cki.CK_RV {
     _ = handle;
 
-    return cki.CKR_OK;
+    return cki.CKR_DEVICE_ERROR;
 }
 
 export fn C_CreateObject(handle: cki.CK_SESSION_HANDLE, template: cki.CK_ATTRIBUTE_PTR, count: cki.CK_ULONG, obj: cki.CK_OBJECT_HANDLE_PTR) callconv(.C) cki.CK_RV {
@@ -234,7 +299,7 @@ export fn C_CreateObject(handle: cki.CK_SESSION_HANDLE, template: cki.CK_ATTRIBU
     _ = count;
     _ = obj;
 
-    return cki.CKR_OK;
+    return cki.CKR_DEVICE_ERROR;
 }
 
 export fn C_CopyObject(handle: cki.CK_SESSION_HANDLE, src: cki.CK_OBJECT_HANDLE, template: cki.CK_ATTRIBUTE_PTR, count: cki.CK_ULONG, dst: cki.CK_OBJECT_HANDLE_PTR) callconv(.C) cki.CK_RV {
@@ -244,14 +309,14 @@ export fn C_CopyObject(handle: cki.CK_SESSION_HANDLE, src: cki.CK_OBJECT_HANDLE,
     _ = count;
     _ = dst;
 
-    return cki.CKR_OK;
+    return cki.CKR_DEVICE_ERROR;
 }
 
 export fn C_DestroyObject(handle: cki.CK_SESSION_HANDLE, object: cki.CK_OBJECT_HANDLE) callconv(.C) cki.CK_RV {
     _ = handle;
     _ = object;
 
-    return cki.CKR_OK;
+    return cki.CKR_DEVICE_ERROR;
 }
 
 export fn C_GetObjectSize(handle: cki.CK_SESSION_HANDLE, object: cki.CK_OBJECT_HANDLE, size: cki.CK_ULONG_PTR) callconv(.C) cki.CK_RV {
@@ -259,7 +324,7 @@ export fn C_GetObjectSize(handle: cki.CK_SESSION_HANDLE, object: cki.CK_OBJECT_H
     _ = object;
     _ = size;
 
-    return cki.CKR_OK;
+    return cki.CKR_DEVICE_ERROR;
 }
 
 export fn C_GetAttributeValue(handle: cki.CK_SESSION_HANDLE, object: cki.CK_OBJECT_HANDLE, template: cki.CK_ATTRIBUTE_PTR, count: cki.CK_ULONG) callconv(.C) cki.CK_RV {
@@ -268,7 +333,7 @@ export fn C_GetAttributeValue(handle: cki.CK_SESSION_HANDLE, object: cki.CK_OBJE
     _ = template;
     _ = count;
 
-    return cki.CKR_OK;
+    return cki.CKR_DEVICE_ERROR;
 }
 
 export fn C_SetAttributeValue(handle: cki.CK_SESSION_HANDLE, object: cki.CK_OBJECT_HANDLE, template: cki.CK_ATTRIBUTE_PTR, count: cki.CK_ULONG) callconv(.C) cki.CK_RV {
@@ -277,7 +342,7 @@ export fn C_SetAttributeValue(handle: cki.CK_SESSION_HANDLE, object: cki.CK_OBJE
     _ = template;
     _ = count;
 
-    return cki.CKR_OK;
+    return cki.CKR_DEVICE_ERROR;
 }
 
 export fn C_FindObjectsInit(handle: cki.CK_SESSION_HANDLE, template: cki.CK_ATTRIBUTE_PTR, count: cki.CK_ULONG) callconv(.C) cki.CK_RV {
@@ -285,7 +350,7 @@ export fn C_FindObjectsInit(handle: cki.CK_SESSION_HANDLE, template: cki.CK_ATTR
     _ = template;
     _ = count;
 
-    return cki.CKR_OK;
+    return cki.CKR_DEVICE_ERROR;
 }
 
 export fn C_FindObjects(handle: cki.CK_SESSION_HANDLE, object: cki.CK_OBJECT_HANDLE_PTR, max: cki.CK_ULONG, count: cki.CK_ULONG_PTR) callconv(.C) cki.CK_RV {
@@ -294,13 +359,13 @@ export fn C_FindObjects(handle: cki.CK_SESSION_HANDLE, object: cki.CK_OBJECT_HAN
     _ = object;
     _ = count;
 
-    return cki.CKR_OK;
+    return cki.CKR_DEVICE_ERROR;
 }
 
 export fn C_FindObjectsFinal(handle: cki.CK_SESSION_HANDLE) callconv(.C) cki.CK_RV {
     _ = handle;
 
-    return cki.CKR_OK;
+    return cki.CKR_DEVICE_ERROR;
 }
 
 export fn C_EncryptInit(handle: cki.CK_SESSION_HANDLE, mechanism: cki.CK_MECHANISM_PTR, key: cki.CK_OBJECT_HANDLE) callconv(.C) cki.CK_RV {
@@ -308,7 +373,7 @@ export fn C_EncryptInit(handle: cki.CK_SESSION_HANDLE, mechanism: cki.CK_MECHANI
     _ = mechanism;
     _ = key;
 
-    return cki.CKR_OK;
+    return cki.CKR_DEVICE_ERROR;
 }
 
 export fn C_Encrypt(handle: cki.CK_SESSION_HANDLE, data: cki.CK_BYTE_PTR, len: cki.CK_ULONG, encrypted_data: cki.CK_BYTE_PTR, encrypted_data_len: cki.CK_ULONG_PTR) callconv(.C) cki.CK_RV {
@@ -318,7 +383,7 @@ export fn C_Encrypt(handle: cki.CK_SESSION_HANDLE, data: cki.CK_BYTE_PTR, len: c
     _ = encrypted_data;
     _ = encrypted_data_len;
 
-    return cki.CKR_OK;
+    return cki.CKR_DEVICE_ERROR;
 }
 
 export fn C_EncryptUpdate(handle: cki.CK_SESSION_HANDLE, part: cki.CK_BYTE_PTR, len: cki.CK_ULONG, encrypted_part: cki.CK_BYTE_PTR, encrypted_part_len: cki.CK_ULONG_PTR) callconv(.C) cki.CK_RV {
@@ -328,7 +393,7 @@ export fn C_EncryptUpdate(handle: cki.CK_SESSION_HANDLE, part: cki.CK_BYTE_PTR, 
     _ = encrypted_part;
     _ = encrypted_part_len;
 
-    return cki.CKR_OK;
+    return cki.CKR_DEVICE_ERROR;
 }
 
 export fn C_EncryptFinal(handle: cki.CK_SESSION_HANDLE, last_encrypted_part: cki.CK_BYTE_PTR, last_encrypted_part_len: cki.CK_ULONG_PTR) callconv(.C) cki.CK_RV {
@@ -336,7 +401,7 @@ export fn C_EncryptFinal(handle: cki.CK_SESSION_HANDLE, last_encrypted_part: cki
     _ = last_encrypted_part;
     _ = last_encrypted_part_len;
 
-    return cki.CKR_OK;
+    return cki.CKR_DEVICE_ERROR;
 }
 
 export fn C_DecryptInit(handle: cki.CK_SESSION_HANDLE, mechanism: cki.CK_MECHANISM_PTR, key: cki.CK_OBJECT_HANDLE) callconv(.C) cki.CK_RV {
@@ -344,7 +409,7 @@ export fn C_DecryptInit(handle: cki.CK_SESSION_HANDLE, mechanism: cki.CK_MECHANI
     _ = mechanism;
     _ = key;
 
-    return cki.CKR_OK;
+    return cki.CKR_DEVICE_ERROR;
 }
 
 export fn C_Decrypt(handle: cki.CK_SESSION_HANDLE, encrypted_data: cki.CK_BYTE_PTR, encrypted_data_len: cki.CK_ULONG, data: cki.CK_BYTE_PTR, len: cki.CK_ULONG_PTR) callconv(.C) cki.CK_RV {
@@ -354,7 +419,7 @@ export fn C_Decrypt(handle: cki.CK_SESSION_HANDLE, encrypted_data: cki.CK_BYTE_P
     _ = data;
     _ = len;
 
-    return cki.CKR_OK;
+    return cki.CKR_DEVICE_ERROR;
 }
 
 export fn C_DecryptUpdate(handle: cki.CK_SESSION_HANDLE, encrypted_part: cki.CK_BYTE_PTR, encrypted_part_len: cki.CK_ULONG, part: cki.CK_BYTE_PTR, len: cki.CK_ULONG_PTR) callconv(.C) cki.CK_RV {
@@ -364,7 +429,7 @@ export fn C_DecryptUpdate(handle: cki.CK_SESSION_HANDLE, encrypted_part: cki.CK_
     _ = part;
     _ = len;
 
-    return cki.CKR_OK;
+    return cki.CKR_DEVICE_ERROR;
 }
 
 export fn C_DecryptFinal(handle: cki.CK_SESSION_HANDLE, part: cki.CK_BYTE_PTR, len: cki.CK_ULONG_PTR) callconv(.C) cki.CK_RV {
@@ -372,14 +437,14 @@ export fn C_DecryptFinal(handle: cki.CK_SESSION_HANDLE, part: cki.CK_BYTE_PTR, l
     _ = part;
     _ = len;
 
-    return cki.CKR_OK;
+    return cki.CKR_DEVICE_ERROR;
 }
 
 export fn C_DigestInit(handle: cki.CK_SESSION_HANDLE, mechanism: cki.CK_MECHANISM_PTR) callconv(.C) cki.CK_RV {
     _ = handle;
     _ = mechanism;
 
-    return cki.CKR_OK;
+    return cki.CKR_DEVICE_ERROR;
 }
 
 export fn C_Digest(handle: cki.CK_SESSION_HANDLE, data: cki.CK_BYTE_PTR, len: cki.CK_ULONG, digest: cki.CK_BYTE_PTR, digest_len: cki.CK_ULONG_PTR) callconv(.C) cki.CK_RV {
@@ -389,7 +454,7 @@ export fn C_Digest(handle: cki.CK_SESSION_HANDLE, data: cki.CK_BYTE_PTR, len: ck
     _ = digest;
     _ = digest_len;
 
-    return cki.CKR_OK;
+    return cki.CKR_DEVICE_ERROR;
 }
 
 export fn C_DigestUpdate(handle: cki.CK_SESSION_HANDLE, part: cki.CK_BYTE_PTR, len: cki.CK_ULONG) callconv(.C) cki.CK_RV {
@@ -397,14 +462,14 @@ export fn C_DigestUpdate(handle: cki.CK_SESSION_HANDLE, part: cki.CK_BYTE_PTR, l
     _ = part;
     _ = len;
 
-    return cki.CKR_OK;
+    return cki.CKR_DEVICE_ERROR;
 }
 
 export fn C_DigestKey(handle: cki.CK_SESSION_HANDLE, key: cki.CK_OBJECT_HANDLE) callconv(.C) cki.CK_RV {
     _ = handle;
     _ = key;
 
-    return cki.CKR_OK;
+    return cki.CKR_DEVICE_ERROR;
 }
 
 export fn C_DigestFinal(handle: cki.CK_SESSION_HANDLE, digest: cki.CK_BYTE_PTR, len: cki.CK_ULONG_PTR) callconv(.C) cki.CK_RV {
@@ -412,7 +477,7 @@ export fn C_DigestFinal(handle: cki.CK_SESSION_HANDLE, digest: cki.CK_BYTE_PTR, 
     _ = digest;
     _ = len;
 
-    return cki.CKR_OK;
+    return cki.CKR_DEVICE_ERROR;
 }
 
 export fn C_SignInit(handle: cki.CK_SESSION_HANDLE, mechanism: cki.CK_MECHANISM_PTR, key: cki.CK_OBJECT_HANDLE) callconv(.C) cki.CK_RV {
@@ -420,7 +485,7 @@ export fn C_SignInit(handle: cki.CK_SESSION_HANDLE, mechanism: cki.CK_MECHANISM_
     _ = mechanism;
     _ = key;
 
-    return cki.CKR_OK;
+    return cki.CKR_DEVICE_ERROR;
 }
 
 export fn C_Sign(handle: cki.CK_SESSION_HANDLE, data: cki.CK_BYTE_PTR, len: cki.CK_ULONG, signature: cki.CK_BYTE_PTR, signature_len: cki.CK_ULONG_PTR) callconv(.C) cki.CK_RV {
@@ -430,7 +495,7 @@ export fn C_Sign(handle: cki.CK_SESSION_HANDLE, data: cki.CK_BYTE_PTR, len: cki.
     _ = signature;
     _ = signature_len;
 
-    return cki.CKR_OK;
+    return cki.CKR_DEVICE_ERROR;
 }
 
 export fn C_SignUpdate(handle: cki.CK_SESSION_HANDLE, part: cki.CK_BYTE_PTR, len: cki.CK_ULONG) callconv(.C) cki.CK_RV {
@@ -438,7 +503,7 @@ export fn C_SignUpdate(handle: cki.CK_SESSION_HANDLE, part: cki.CK_BYTE_PTR, len
     _ = part;
     _ = len;
 
-    return cki.CKR_OK;
+    return cki.CKR_DEVICE_ERROR;
 }
 
 export fn C_SignFinal(handle: cki.CK_SESSION_HANDLE, signature: cki.CK_BYTE_PTR, signature_len: cki.CK_ULONG_PTR) callconv(.C) cki.CK_RV {
@@ -446,7 +511,7 @@ export fn C_SignFinal(handle: cki.CK_SESSION_HANDLE, signature: cki.CK_BYTE_PTR,
     _ = signature;
     _ = signature_len;
 
-    return cki.CKR_OK;
+    return cki.CKR_DEVICE_ERROR;
 }
 
 export fn C_SignRecoverInit(handle: cki.CK_SESSION_HANDLE, mechanism: cki.CK_MECHANISM_PTR, key: cki.CK_OBJECT_HANDLE) callconv(.C) cki.CK_RV {
@@ -454,7 +519,7 @@ export fn C_SignRecoverInit(handle: cki.CK_SESSION_HANDLE, mechanism: cki.CK_MEC
     _ = mechanism;
     _ = key;
 
-    return cki.CKR_OK;
+    return cki.CKR_DEVICE_ERROR;
 }
 
 export fn C_SignRecover(handle: cki.CK_SESSION_HANDLE, data: cki.CK_BYTE_PTR, len: cki.CK_ULONG, signature: cki.CK_BYTE_PTR, signature_len: cki.CK_ULONG_PTR) callconv(.C) cki.CK_RV {
@@ -464,7 +529,7 @@ export fn C_SignRecover(handle: cki.CK_SESSION_HANDLE, data: cki.CK_BYTE_PTR, le
     _ = signature;
     _ = signature_len;
 
-    return cki.CKR_OK;
+    return cki.CKR_DEVICE_ERROR;
 }
 
 export fn C_VerifyInit(handle: cki.CK_SESSION_HANDLE, mechanism: cki.CK_MECHANISM_PTR, key: cki.CK_OBJECT_HANDLE) callconv(.C) cki.CK_RV {
@@ -472,7 +537,7 @@ export fn C_VerifyInit(handle: cki.CK_SESSION_HANDLE, mechanism: cki.CK_MECHANIS
     _ = mechanism;
     _ = key;
 
-    return cki.CKR_OK;
+    return cki.CKR_DEVICE_ERROR;
 }
 
 export fn C_Verify(handle: cki.CK_SESSION_HANDLE, data: cki.CK_BYTE_PTR, len: cki.CK_ULONG, signature: cki.CK_BYTE_PTR, signature_len: cki.CK_ULONG) callconv(.C) cki.CK_RV {
@@ -482,7 +547,7 @@ export fn C_Verify(handle: cki.CK_SESSION_HANDLE, data: cki.CK_BYTE_PTR, len: ck
     _ = signature;
     _ = signature_len;
 
-    return cki.CKR_OK;
+    return cki.CKR_DEVICE_ERROR;
 }
 
 export fn C_VerifyUpdate(handle: cki.CK_SESSION_HANDLE, part: cki.CK_BYTE_PTR, len: cki.CK_ULONG) callconv(.C) cki.CK_RV {
@@ -490,7 +555,7 @@ export fn C_VerifyUpdate(handle: cki.CK_SESSION_HANDLE, part: cki.CK_BYTE_PTR, l
     _ = part;
     _ = len;
 
-    return cki.CKR_OK;
+    return cki.CKR_DEVICE_ERROR;
 }
 
 export fn C_VerifyFinal(handle: cki.CK_SESSION_HANDLE, signature: cki.CK_BYTE_PTR, len: cki.CK_ULONG) callconv(.C) cki.CK_RV {
@@ -498,7 +563,7 @@ export fn C_VerifyFinal(handle: cki.CK_SESSION_HANDLE, signature: cki.CK_BYTE_PT
     _ = signature;
     _ = len;
 
-    return cki.CKR_OK;
+    return cki.CKR_DEVICE_ERROR;
 }
 
 export fn C_VerifyRecoverInit(handle: cki.CK_SESSION_HANDLE, mechanism: cki.CK_MECHANISM_PTR, key: cki.CK_OBJECT_HANDLE) callconv(.C) cki.CK_RV {
@@ -506,7 +571,7 @@ export fn C_VerifyRecoverInit(handle: cki.CK_SESSION_HANDLE, mechanism: cki.CK_M
     _ = mechanism;
     _ = key;
 
-    return cki.CKR_OK;
+    return cki.CKR_DEVICE_ERROR;
 }
 
 export fn C_VerifyRecover(handle: cki.CK_SESSION_HANDLE, signature: cki.CK_BYTE_PTR, signature_len: cki.CK_ULONG, data: cki.CK_BYTE_PTR, data_len: cki.CK_ULONG_PTR) callconv(.C) cki.CK_RV {
@@ -516,7 +581,7 @@ export fn C_VerifyRecover(handle: cki.CK_SESSION_HANDLE, signature: cki.CK_BYTE_
     _ = data;
     _ = data_len;
 
-    return cki.CKR_OK;
+    return cki.CKR_DEVICE_ERROR;
 }
 
 export fn C_DigestEncryptUpdate(handle: cki.CK_SESSION_HANDLE, part: cki.CK_BYTE_PTR, len: cki.CK_ULONG, encrypted_part: cki.CK_BYTE_PTR, encrypted_part_len: cki.CK_ULONG_PTR) callconv(.C) cki.CK_RV {
@@ -526,7 +591,7 @@ export fn C_DigestEncryptUpdate(handle: cki.CK_SESSION_HANDLE, part: cki.CK_BYTE
     _ = encrypted_part;
     _ = encrypted_part_len;
 
-    return cki.CKR_OK;
+    return cki.CKR_DEVICE_ERROR;
 }
 
 export fn C_DecryptDigestUpdate(handle: cki.CK_SESSION_HANDLE, encrypted_part: cki.CK_BYTE_PTR, encrypted_part_len: cki.CK_ULONG, part: cki.CK_BYTE_PTR, len: cki.CK_ULONG_PTR) callconv(.C) cki.CK_RV {
@@ -536,7 +601,7 @@ export fn C_DecryptDigestUpdate(handle: cki.CK_SESSION_HANDLE, encrypted_part: c
     _ = encrypted_part;
     _ = encrypted_part_len;
 
-    return cki.CKR_OK;
+    return cki.CKR_DEVICE_ERROR;
 }
 
 export fn C_SignEncryptUpdate(handle: cki.CK_SESSION_HANDLE, part: cki.CK_BYTE_PTR, len: cki.CK_ULONG, encrypted_part: cki.CK_BYTE_PTR, encrypted_part_len: cki.CK_ULONG_PTR) callconv(.C) cki.CK_RV {
@@ -546,7 +611,7 @@ export fn C_SignEncryptUpdate(handle: cki.CK_SESSION_HANDLE, part: cki.CK_BYTE_P
     _ = encrypted_part;
     _ = encrypted_part_len;
 
-    return cki.CKR_OK;
+    return cki.CKR_DEVICE_ERROR;
 }
 
 export fn C_DecryptVerifyUpdate(handle: cki.CK_SESSION_HANDLE, encrypted_part: cki.CK_BYTE_PTR, encrypted_part_len: cki.CK_ULONG, part: cki.CK_BYTE_PTR, len: cki.CK_ULONG_PTR) callconv(.C) cki.CK_RV {
@@ -556,7 +621,7 @@ export fn C_DecryptVerifyUpdate(handle: cki.CK_SESSION_HANDLE, encrypted_part: c
     _ = encrypted_part;
     _ = encrypted_part_len;
 
-    return cki.CKR_OK;
+    return cki.CKR_DEVICE_ERROR;
 }
 
 export fn C_GenerateKey(handle: cki.CK_SESSION_HANDLE, mechanism: cki.CK_MECHANISM_PTR, template: cki.CK_ATTRIBUTE_PTR, count: cki.CK_ULONG, key: cki.CK_OBJECT_HANDLE_PTR) callconv(.C) cki.CK_RV {
@@ -566,7 +631,7 @@ export fn C_GenerateKey(handle: cki.CK_SESSION_HANDLE, mechanism: cki.CK_MECHANI
     _ = count;
     _ = key;
 
-    return cki.CKR_OK;
+    return cki.CKR_DEVICE_ERROR;
 }
 
 export fn C_GenerateKeyPair(handle: cki.CK_SESSION_HANDLE, mechanism: cki.CK_MECHANISM_PTR, pub_key_template: cki.CK_ATTRIBUTE_PTR, pub_key_template_count: cki.CK_ULONG, priv_key_template: cki.CK_ATTRIBUTE_PTR, priv_key_template_count: cki.CK_ULONG, pub_key: cki.CK_OBJECT_HANDLE_PTR, priv_key: cki.CK_OBJECT_HANDLE_PTR) callconv(.C) cki.CK_RV {
@@ -579,7 +644,7 @@ export fn C_GenerateKeyPair(handle: cki.CK_SESSION_HANDLE, mechanism: cki.CK_MEC
     _ = pub_key;
     _ = priv_key;
 
-    return cki.CKR_OK;
+    return cki.CKR_DEVICE_ERROR;
 }
 
 fn C_WrapKey(handle: cki.CK_SESSION_HANDLE, mechanism: cki.CK_MECHANISM_PTR, whrapping_key: cki.CK_OBJECT_HANDLE, key: cki.CK_OBJECT_HANDLE, wrapped_key: cki.CK_BYTE_PTR, wrapped_key_len: cki.CK_ULONG_PTR) callconv(.C) cki.CK_RV {
@@ -590,7 +655,7 @@ fn C_WrapKey(handle: cki.CK_SESSION_HANDLE, mechanism: cki.CK_MECHANISM_PTR, whr
     _ = wrapped_key;
     _ = wrapped_key_len;
 
-    return cki.CKR_OK;
+    return cki.CKR_DEVICE_ERROR;
 }
 
 export fn C_UnwrapKey(handle: cki.CK_SESSION_HANDLE, mechanism: cki.CK_MECHANISM_PTR, unwrapping_key: cki.CK_OBJECT_HANDLE, wrapped_key: cki.CK_BYTE_PTR, wrapped_key_len: cki.CK_ULONG, template: cki.CK_ATTRIBUTE_PTR, count: cki.CK_ULONG, key: cki.CK_OBJECT_HANDLE_PTR) callconv(.C) cki.CK_RV {
@@ -603,7 +668,7 @@ export fn C_UnwrapKey(handle: cki.CK_SESSION_HANDLE, mechanism: cki.CK_MECHANISM
     _ = count;
     _ = key;
 
-    return cki.CKR_OK;
+    return cki.CKR_DEVICE_ERROR;
 }
 
 export fn C_DeriveKey(handle: cki.CK_SESSION_HANDLE, mechanism: cki.CK_MECHANISM_PTR, base_key: cki.CK_OBJECT_HANDLE, template: cki.CK_ATTRIBUTE_PTR, count: cki.CK_ULONG, key: cki.CK_OBJECT_HANDLE_PTR) callconv(.C) cki.CK_RV {
@@ -614,7 +679,7 @@ export fn C_DeriveKey(handle: cki.CK_SESSION_HANDLE, mechanism: cki.CK_MECHANISM
     _ = count;
     _ = key;
 
-    return cki.CKR_OK;
+    return cki.CKR_DEVICE_ERROR;
 }
 
 export fn C_SeedRandom(handle: cki.CK_SESSION_HANDLE, seed: cki.CK_BYTE_PTR, len: cki.CK_ULONG) callconv(.C) cki.CK_RV {
@@ -622,7 +687,7 @@ export fn C_SeedRandom(handle: cki.CK_SESSION_HANDLE, seed: cki.CK_BYTE_PTR, len
     _ = seed;
     _ = len;
 
-    return cki.CKR_OK;
+    return cki.CKR_DEVICE_ERROR;
 }
 
 export fn C_GenerateRandom(handle: cki.CK_SESSION_HANDLE, data: cki.CK_BYTE_PTR, len: cki.CK_ULONG) callconv(.C) cki.CK_RV {
@@ -630,24 +695,24 @@ export fn C_GenerateRandom(handle: cki.CK_SESSION_HANDLE, data: cki.CK_BYTE_PTR,
     _ = data;
     _ = len;
 
-    return cki.CKR_OK;
+    return cki.CKR_DEVICE_ERROR;
 }
 
 export fn C_GetFunctionStatus(handle: cki.CK_SESSION_HANDLE) callconv(.C) cki.CK_RV {
     _ = handle;
 
-    return cki.CKR_OK;
+    return cki.CKR_DEVICE_ERROR;
 }
 
 export fn C_CancelFunction(handle: cki.CK_SESSION_HANDLE) callconv(.C) cki.CK_RV {
     _ = handle;
 
-    return cki.CKR_OK;
+    return cki.CKR_DEVICE_ERROR;
 }
 
 export fn C_WaitForSlotEvent(flags: cki.CK_FLAGS, slot: cki.CK_SLOT_ID_PTR, _: cki.CK_VOID_PTR) callconv(.C) cki.CK_RV {
     _ = flags;
     _ = slot;
 
-    return cki.CKR_OK;
+    return cki.CKR_DEVICE_ERROR;
 }
