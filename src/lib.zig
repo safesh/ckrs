@@ -8,12 +8,45 @@ const cki = @cImport({
 });
 
 const debug = std.debug.print;
-const Allocator = std.mem.Allocator;
+var Arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
 
 var CKRS: struct {
     initialized: bool = false,
     session_counter: usize = 0,
-} = .{};
+    sessions: std.ArrayList(usize),
+    rw_session_counter: usize = 0,
+    rw_sessions: std.ArrayList(usize),
+
+    fn new_session(self: *@TypeOf(CKRS)) !usize {
+        // TODO: Check if we don't overlap
+
+        debug("new_session \n", .{});
+
+        const session = self.session_counter;
+
+        self.session_counter += 1;
+
+        try self.sessions.append(session);
+
+        return session;
+    }
+
+    fn new_rw_session(self: *@TypeOf(CKRS)) !usize {
+        // TODO: Check if we don't overlap
+
+        debug("new_rw_session \n", .{});
+        const session = self.rw_session_counter;
+
+        self.rw_session_counter += 1;
+
+        try self.rw_sessions.append(session);
+
+        return session;
+    }
+} = .{
+    .sessions = std.ArrayList(usize).init(Arena.allocator()),
+    .rw_sessions = std.ArrayList(usize).init(Arena.allocator()),
+};
 
 fn make_fn_list(comptime T: type) T {
     const meta = @import("std").meta;
@@ -239,7 +272,18 @@ export fn C_SetPIN(session: cki.CK_SESSION_HANDLE, old_pin: cki.CK_UTF8CHAR_PTR,
 export fn C_OpenSession(id: cki.CK_SLOT_ID, flags: cki.CK_FLAGS, app: cki.CK_VOID_PTR, notify: cki.CK_NOTIFY, handle: cki.CK_SESSION_HANDLE_PTR) callconv(.C) cki.CK_RV {
     debug("C_OpenSession id = {}, flags = {}, app = {*}, notify = {*}, handle = {*}\n", .{ id, flags, app, notify, handle });
 
-    return cki.CKR_DEVICE_ERROR;
+    if (handle == null) return cki.CKR_ARGUMENTS_BAD;
+
+    if ((flags & cki.CKF_SERIAL_SESSION) == 0) return cki.CKR_SESSION_PARALLEL_NOT_SUPPORTED;
+
+    const session = if (flags & cki.CKF_RW_SESSION == 0)
+        CKRS.new_session()
+    else
+        CKRS.new_rw_session();
+
+    handle.* = session catch return cki.CKR_DEVICE_ERROR;
+
+    return cki.CKR_OK;
 }
 
 export fn C_CloseSession(handle: cki.CK_SESSION_HANDLE) callconv(.C) cki.CK_RV {
