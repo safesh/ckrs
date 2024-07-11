@@ -8,6 +8,7 @@ const cki = @cImport({
 });
 
 const debug = std.debug.print;
+
 var Arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
 
 var CKRS: struct {
@@ -94,21 +95,17 @@ export fn C_Initialize(args: cki.CK_C_INITIALIZE_ARGS_PTR) callconv(.C) cki.CK_R
 
     CKRS.initialized = true;
 
+    // NOTE(Mulling): CKF_LIBRARY_CANT_CREATE_OS_THREADS we WILL not create threads
+
     if (args == null) {
+        return cki.CKR_OK;
+    } else if (args.*.flags & cki.CKF_OS_LOCKING_OK == 0 and args.*.LockMutex == null and args.*.CreateMutex == null and args.*.UnlockMutex == null and args.*.DestroyMutex == null) {
         return cki.CKR_OK;
     }
 
-    // CKF_LIBRARY_CANT_CREATE_OS_THREADS
-    // 0x00000001
-    // True if application threads which are executing calls to the library may not use native operating system calls to spawn new threads; false if they may
-    //
-    // CKF_OS_LOCKING_OK
-    // 0x00000002
-    // True if the library can use the native operation system threading model for locking; false otherwise
+    // FIXME: Support multi-thread access
 
-    // TODO:
-
-    return cki.CKR_OK;
+    return cki.CKR_CANT_LOCK;
 }
 
 export fn C_Finalize(_: cki.CK_VOID_PTR) callconv(.C) cki.CK_RV {
@@ -152,6 +149,8 @@ export fn C_GetSlotList(present: cki.CK_BBOOL, slot_list: cki.CK_SLOT_ID_PTR, co
         else
             return cki.CKR_ARGUMENTS_BAD;
     } else {
+        if (count == null or count.* > 1) return cki.CKR_ARGUMENTS_BAD;
+        if (count.* == 0) return cki.CKR_BUFFER_TOO_SMALL;
         slot_list[0] = 1;
     }
 
@@ -197,13 +196,13 @@ export fn C_GetTokenInfo(id: cki.CK_SLOT_ID, info: cki.CK_TOKEN_INFO_PTR) callco
     info.*.ulMaxSessionCount = cki.CK_EFFECTIVELY_INFINITE;
 
     // Number of sessions that this application currently has open with the token
-    info.*.ulSessionCount = 0; // TODO:
+    info.*.ulSessionCount = CKRS.sessions.items.len;
 
     // Maximum number of read/write sessions that can be opened with the token at one time by a single application
     info.*.ulMaxRwSessionCount = cki.CK_EFFECTIVELY_INFINITE;
 
     // Number of read/write sessions that this application currently has open with the token
-    info.*.ulRwSessionCount = 0; // TODO:
+    info.*.ulRwSessionCount = CKRS.rw_sessions.items.len;
 
     // Maximum length in bytes of the PIN
     info.*.ulMaxPinLen = 256;
@@ -212,16 +211,16 @@ export fn C_GetTokenInfo(id: cki.CK_SLOT_ID, info: cki.CK_TOKEN_INFO_PTR) callco
     info.*.ulMinPinLen = 8;
 
     // The total amount of memory on the token in bytes in which public objects may be stored (see CK_TOKEN_INFO Note below)
-    info.*.ulTotalPublicMemory = 1 << 20;
+    info.*.ulTotalPublicMemory = cki.CK_UNAVAILABLE_INFORMATION;
 
     // The amount of free (unused) memory on the token in bytes for public objects (see CK_TOKEN_INFO Note below)
-    info.*.ulFreePublicMemory = 1 << 20;
+    info.*.ulFreePublicMemory = cki.CK_UNAVAILABLE_INFORMATION;
 
     // The total amount of memory on the token in bytes in which private objects may be stored (see CK_TOKEN_INFO Note below)
-    info.*.ulTotalPrivateMemory = 1 << 20;
+    info.*.ulTotalPrivateMemory = cki.CK_UNAVAILABLE_INFORMATION;
 
     // The amount of free (unused) memory on the token in bytes for private objects (see CK_TOKEN_INFO Note below)
-    info.*.ulFreePrivateMemory = 1 << 20;
+    info.*.ulFreePrivateMemory = cki.CK_UNAVAILABLE_INFORMATION;
 
     // Version number of hardware
     info.*.hardwareVersion = .{ .major = 0, .minor = 0 };
@@ -247,26 +246,22 @@ export fn C_GetMechanismInfo(id: cki.CK_SLOT_ID, kind: cki.CK_MECHANISM_TYPE, in
     return cki.CKR_DEVICE_ERROR;
 }
 
-fn C_InitToken(id: cki.CK_SLOT_ID, pin: cki.CK_UTF8CHAR_PTR, len: cki.CK_ULONG, label: cki.CK_UTF8CHAR_PTR) callconv(.C) cki.CK_RV {
-    debug("C_InitToken id = {}, pin = {*}, len = {}, label = {*}\n", .{ id, pin, len, label });
+fn C_InitToken(_: cki.CK_SLOT_ID, _: cki.CK_UTF8CHAR_PTR, _: cki.CK_ULONG, _: cki.CK_UTF8CHAR_PTR) callconv(.C) cki.CK_RV {
+    debug("UNSUPORTED C_InitToken\n", .{});
 
-    return cki.CKR_DEVICE_ERROR;
+    return cki.CKR_FUNCTION_NOT_SUPPORTED;
 }
 
-export fn C_InitPIN(session: cki.CK_SESSION_HANDLE, pin: cki.CK_UTF8CHAR_PTR, len: cki.CK_ULONG) callconv(.C) cki.CK_RV {
-    debug("C_InitPIN session = {}, pin = {*}, len = {}\n", .{ session, pin, len });
+export fn C_InitPIN(_: cki.CK_SESSION_HANDLE, _: cki.CK_UTF8CHAR_PTR, _: cki.CK_ULONG) callconv(.C) cki.CK_RV {
+    debug("UNSUPORTED C_InitPIN\n", .{});
 
-    return cki.CKR_DEVICE_ERROR;
+    return cki.CKR_FUNCTION_NOT_SUPPORTED;
 }
 
-export fn C_SetPIN(session: cki.CK_SESSION_HANDLE, old_pin: cki.CK_UTF8CHAR_PTR, old_len: cki.CK_ULONG, new_pin: cki.CK_UTF8CHAR_PTR, new_len: cki.CK_ULONG) callconv(.C) cki.CK_RV {
-    _ = session;
-    _ = old_pin;
-    _ = old_len;
-    _ = new_pin;
-    _ = new_len;
+export fn C_SetPIN(_: cki.CK_SESSION_HANDLE, _: cki.CK_UTF8CHAR_PTR, _: cki.CK_ULONG, _: cki.CK_UTF8CHAR_PTR, _: cki.CK_ULONG) callconv(.C) cki.CK_RV {
+    debug("UNSUPORTED C_SetPIN\n", .{});
 
-    return cki.CKR_OK;
+    return cki.CKR_FUNCTION_NOT_SUPPORTED;
 }
 
 export fn C_OpenSession(id: cki.CK_SLOT_ID, flags: cki.CK_FLAGS, app: cki.CK_VOID_PTR, notify: cki.CK_NOTIFY, handle: cki.CK_SESSION_HANDLE_PTR) callconv(.C) cki.CK_RV {
