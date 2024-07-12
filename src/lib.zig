@@ -190,7 +190,7 @@ export fn C_GetTokenInfo(id: cki.CK_SLOT_ID, info: cki.CK_TOKEN_INFO_PTR) callco
     memcpy(u8, &info.*.serialNumber, &make_padded_string("1303199831031997", 16));
 
     // Bit flags indicating capabilities and status of the device
-    info.*.flags = if (CKRS.initialized) cki.CKF_TOKEN_INITIALIZED else 0 | cki.CKF_USER_PIN_INITIALIZED | cki.CKF_PROTECTED_AUTHENTICATION_PATH; // TODO:
+    info.*.flags = if (CKRS.initialized) cki.CKF_TOKEN_INITIALIZED else 0 | cki.CKF_USER_PIN_INITIALIZED | cki.CKF_PROTECTED_AUTHENTICATION_PATH;
 
     // Maximum number of sessions that can be opened with the token at one time by a single application.
     info.*.ulMaxSessionCount = cki.CK_EFFECTIVELY_INFINITE;

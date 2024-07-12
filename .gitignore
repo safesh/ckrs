@@ -6,3 +6,6 @@
 /release/
 zig-cache/
 zig-out/
+
+/test/ca
+/test/user
