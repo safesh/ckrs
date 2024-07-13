@@ -4,7 +4,7 @@ const cki = @cImport({
     @cDefine("CK_DECLARE_FUNCTION(returnType, name)", "returnType name");
     @cDefine("CK_DECLARE_FUNCTION_POINTER(returnType, name)", "returnType (* name)");
     @cDefine("CK_CALLBACK_FUNCTION(returnType, name)", "returnType (* name)");
-    @cInclude("v300/include/pkcs11.h");
+    @cInclude("pkcs11.h");
 });
 
 const debug = std.debug.print;
@@ -66,8 +66,8 @@ fn make_fn_list(comptime T: type, version: cki.CK_VERSION) T {
     return ret;
 }
 
-const fn_list_v240 = make_fn_list(cki.struct_CK_FUNCTION_LIST, .{ .major = 2, .minor = 40 });
-const fn_list_v300 = make_fn_list(cki.struct_CK_FUNCTION_LIST_3_0, .{ .major = 3, .minor = 0 });
+const fn_list_v2 = make_fn_list(cki.struct_CK_FUNCTION_LIST, .{ .major = 2, .minor = 40 });
+const fn_list_v3 = make_fn_list(cki.struct_CK_FUNCTION_LIST_3_0, .{ .major = 3, .minor = 10 });
 
 fn make_padded_string(comptime str: []const u8, comptime size: usize) [size]u8 {
     if (size < 1) @compileError("size must be greater than 0");
@@ -138,7 +138,7 @@ export fn C_GetFunctionList(list: [*c][*c]cki.CK_FUNCTION_LIST) callconv(.C) cki
 
     if (list == null) return cki.CKR_ARGUMENTS_BAD;
 
-    list.* = @constCast(&fn_list_v240);
+    list.* = @constCast(&fn_list_v2);
 
     return cki.CKR_OK;
 }
@@ -761,13 +761,13 @@ export fn C_WaitForSlotEvent(flags: cki.CK_FLAGS, slot: cki.CK_SLOT_ID_PTR, _: c
 
 const v2_interface = cki.CK_INTERFACE{
     .flags = 0,
-    .pFunctionList = @constCast(&fn_list_v240),
+    .pFunctionList = @constCast(&fn_list_v2),
     .pInterfaceName = @constCast("PKCS #11"),
 };
 
 const v3_interface = cki.CK_INTERFACE{
     .flags = 0,
-    .pFunctionList = @constCast(&fn_list_v300),
+    .pFunctionList = @constCast(&fn_list_v3),
     .pInterfaceName = @constCast("PKCS #11"),
 };
 

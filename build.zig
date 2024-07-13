@@ -12,7 +12,7 @@ pub fn build(b: *std.Build) void {
     // set a preferred release mode, allowing the user to decide how to optimize.
     const optimize = b.standardOptimizeOption(.{});
 
-    const include_path = b.path("oasis/pkcs11/");
+    const include_path = b.path("oasis/cryptoki/");
 
     const exe = b.addExecutable(.{
         .name = "cryptoki-krs",
