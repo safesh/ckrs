@@ -4,7 +4,7 @@ const cki = @cImport({
     @cDefine("CK_DECLARE_FUNCTION(returnType, name)", "returnType name");
     @cDefine("CK_DECLARE_FUNCTION_POINTER(returnType, name)", "returnType (* name)");
     @cDefine("CK_CALLBACK_FUNCTION(returnType, name)", "returnType (* name)");
-    @cInclude("pkcs11.h");
+    @cInclude("v300/include/pkcs11.h");
 });
 
 const debug = std.debug.print;
@@ -49,15 +49,15 @@ var CKRS: struct {
     .rw_sessions = std.ArrayList(usize).init(Arena.allocator()),
 };
 
-fn make_fn_list(comptime T: type) T {
+fn make_fn_list(comptime T: type, version: cki.CK_VERSION) T {
     const meta = @import("std").meta;
 
     var ret: T = undefined;
 
     inline for (meta.fields(T)) |field| {
         if (std.mem.eql(u8, field.name, "version")) {
-            @field(ret, field.name).major = 3;
-            @field(ret, field.name).minor = 0;
+            @field(ret, field.name).major = version.major;
+            @field(ret, field.name).minor = version.minor;
         } else {
             @field(ret, field.name) = @ptrCast(&@field(@This(), field.name));
         }
@@ -66,7 +66,8 @@ fn make_fn_list(comptime T: type) T {
     return ret;
 }
 
-const fn_list = make_fn_list(cki.struct_CK_FUNCTION_LIST);
+const fn_list_v240 = make_fn_list(cki.struct_CK_FUNCTION_LIST, .{ .major = 2, .minor = 40 });
+const fn_list_v300 = make_fn_list(cki.struct_CK_FUNCTION_LIST_3_0, .{ .major = 3, .minor = 0 });
 
 fn make_padded_string(comptime str: []const u8, comptime size: usize) [size]u8 {
     if (size < 1) @compileError("size must be greater than 0");
@@ -135,7 +136,9 @@ export fn C_GetInfo(info: cki.CK_INFO_PTR) callconv(.C) cki.CK_RV {
 export fn C_GetFunctionList(list: [*c][*c]cki.CK_FUNCTION_LIST) callconv(.C) cki.CK_RV {
     debug("C_GetFunctionList {*}\n", .{list});
 
-    list.* = @constCast(&fn_list);
+    if (list == null) return cki.CKR_ARGUMENTS_BAD;
+
+    list.* = @constCast(&fn_list_v240);
 
     return cki.CKR_OK;
 }
@@ -754,4 +757,267 @@ export fn C_WaitForSlotEvent(flags: cki.CK_FLAGS, slot: cki.CK_SLOT_ID_PTR, _: c
     _ = slot;
 
     return cki.CKR_DEVICE_ERROR;
+}
+
+const v2_interface = cki.CK_INTERFACE{
+    .flags = 0,
+    .pFunctionList = @constCast(&fn_list_v240),
+    .pInterfaceName = @constCast("PKCS #11"),
+};
+
+const v3_interface = cki.CK_INTERFACE{
+    .flags = 0,
+    .pFunctionList = @constCast(&fn_list_v300),
+    .pInterfaceName = @constCast("PKCS #11"),
+};
+
+// v3.00+
+
+export fn C_GetInterface(_: cki.CK_UTF8CHAR_PTR, version: cki.CK_VERSION_PTR, interface: cki.CK_INTERFACE_PTR_PTR, flags: cki.CK_FLAGS) cki.CK_RV {
+    if (interface == null) return cki.CKR_ARGUMENTS_BAD;
+
+    interface.* = null;
+
+    if (flags != 0) return cki.CKR_OK;
+    // if (name != null and !std.mem.eql(u8, name, "PKCS #11")) return cki.CKR_OK; # FIXME
+
+    if (version != null) {
+        if (version.*.major == 2) {
+            interface.* = @constCast(&v2_interface);
+        } else if (version.*.major == 3) {
+            interface.* = @constCast(&v3_interface);
+        }
+    }
+
+    return cki.CKR_OK;
+}
+
+export fn C_GetInterfaceList(interfaces: cki.CK_INTERFACE_PTR, count: cki.CK_ULONG_PTR) cki.CK_RV {
+    if (count == null) return cki.CKR_ARGUMENTS_BAD;
+
+    if (interfaces == null) {
+        count.* = 2;
+    } else {
+        interfaces[0].pInterfaceName = v2_interface.pInterfaceName;
+        interfaces[0].pInterfaceName = v2_interface.pInterfaceName;
+        interfaces[0].pInterfaceName = v2_interface.pInterfaceName;
+
+        interfaces[0].pInterfaceName = v3_interface.pInterfaceName;
+        interfaces[0].pInterfaceName = v3_interface.pInterfaceName;
+        interfaces[0].pInterfaceName = v3_interface.pInterfaceName;
+    }
+
+    return cki.CKR_OK;
+}
+
+export fn C_LoginUser(handle: cki.CK_SESSION_HANDLE, kind: cki.CK_USER_TYPE, pin: cki.CK_UTF8CHAR_PTR, len: cki.CK_ULONG, name: cki.CK_UTF8CHAR_PTR, name_len: cki.CK_ULONG) cki.CK_RV {
+    _ = handle;
+    _ = kind;
+    _ = pin;
+    _ = len;
+    _ = name;
+    _ = name_len;
+
+    return cki.CKR_FUNCTION_NOT_SUPPORTED;
+}
+
+export fn C_SessionCancel(handle: cki.CK_SESSION_HANDLE, flags: cki.CK_FLAGS) cki.CK_RV {
+    _ = handle;
+    _ = flags;
+
+    return cki.CKR_FUNCTION_NOT_SUPPORTED;
+}
+
+export fn C_MessageEncryptInit(handle: cki.CK_SESSION_HANDLE, mechanism: cki.CK_MECHANISM_PTR, key: cki.CK_OBJECT_HANDLE) cki.CK_RV {
+    _ = handle;
+    _ = mechanism;
+    _ = key;
+
+    return cki.CKR_FUNCTION_NOT_SUPPORTED;
+}
+
+export fn C_EncryptMessage(handle: cki.CK_SESSION_HANDLE, param: cki.CK_VOID_PTR, param_len: cki.CK_ULONG, data: cki.CK_BYTE_PTR, data_len: cki.CK_ULONG, text: cki.CK_BYTE_PTR, text_len: cki.CK_ULONG, cipher: cki.CK_BYTE_PTR, cipher_len: cki.CK_ULONG_PTR) cki.CK_RV {
+    _ = handle;
+    _ = param;
+    _ = param_len;
+    _ = data;
+    _ = data_len;
+    _ = text;
+    _ = text_len;
+    _ = cipher;
+    _ = cipher_len;
+
+    return cki.CKR_FUNCTION_NOT_SUPPORTED;
+}
+
+export fn C_EncryptMessageBegin(handle: cki.CK_SESSION_HANDLE, param: cki.CK_VOID_PTR, param_len: cki.CK_ULONG, data: cki.CK_BYTE_PTR, data_len: cki.CK_ULONG) cki.CK_RV {
+    _ = handle;
+    _ = param;
+    _ = param_len;
+    _ = data;
+    _ = data_len;
+
+    return cki.CKR_FUNCTION_NOT_SUPPORTED;
+}
+
+export fn C_EncryptMessageNext(handle: cki.CK_SESSION_HANDLE, param: cki.CK_VOID_PTR, param_len: cki.CK_ULONG, text: cki.CK_BYTE_PTR, text_len: cki.CK_ULONG, cipher: cki.CK_BYTE_PTR, cipher_len: cki.CK_ULONG_PTR, flags: cki.CK_FLAGS) cki.CK_RV {
+    _ = handle;
+    _ = param;
+    _ = param_len;
+    _ = text;
+    _ = text_len;
+    _ = cipher;
+    _ = cipher_len;
+    _ = flags;
+
+    return cki.CKR_FUNCTION_NOT_SUPPORTED;
+}
+
+export fn C_MessageEncryptFinal(handle: cki.CK_SESSION_HANDLE) cki.CK_RV {
+    _ = handle;
+
+    return cki.CKR_FUNCTION_NOT_SUPPORTED;
+}
+
+export fn C_MessageDecryptInit(handle: cki.CK_SESSION_HANDLE, meachanism: cki.CK_MECHANISM_PTR, key: cki.CK_OBJECT_HANDLE) cki.CK_RV {
+    _ = handle;
+    _ = meachanism;
+    _ = key;
+
+    return cki.CKR_FUNCTION_NOT_SUPPORTED;
+}
+
+fn C_DecryptMessage(handle: cki.CK_SESSION_HANDLE, param: cki.CK_VOID_PTR, param_len: cki.CK_ULONG, data: cki.CK_BYTE_PTR, data_len: cki.CK_ULONG, cipher: cki.CK_BYTE_PTR, cipher_len: cki.CK_ULONG, text: cki.CK_BYTE_PTR, text_len: cki.CK_ULONG_PTR) cki.CK_RV {
+    _ = handle;
+    _ = param;
+    _ = param_len;
+    _ = text;
+    _ = text_len;
+    _ = data;
+    _ = data_len;
+    _ = cipher;
+    _ = cipher_len;
+
+    return cki.CKR_FUNCTION_NOT_SUPPORTED;
+}
+
+export fn C_DecryptMessageBegin(handle: cki.CK_SESSION_HANDLE, param: cki.CK_VOID_PTR, param_len: cki.CK_ULONG, data: cki.CK_BYTE_PTR, data_len: cki.CK_ULONG) cki.CK_RV {
+    _ = handle;
+    _ = param;
+    _ = param_len;
+    _ = data;
+    _ = data_len;
+
+    return cki.CKR_FUNCTION_NOT_SUPPORTED;
+}
+
+export fn C_DecryptMessageNext(handle: cki.CK_SESSION_HANDLE, param: cki.CK_VOID_PTR, param_len: cki.CK_ULONG, cipher: cki.CK_BYTE_PTR, cipher_len: cki.CK_ULONG, text: cki.CK_BYTE_PTR, text_len: cki.CK_ULONG_PTR, flags: cki.CK_FLAGS) cki.CK_RV {
+    _ = handle;
+    _ = param;
+    _ = param_len;
+    _ = text;
+    _ = text_len;
+    _ = cipher;
+    _ = cipher_len;
+    _ = flags;
+
+    return cki.CKR_FUNCTION_NOT_SUPPORTED;
+}
+
+export fn C_MessageDecryptFinal(handle: cki.CK_SESSION_HANDLE) cki.CK_RV {
+    _ = handle;
+
+    return cki.CKR_FUNCTION_NOT_SUPPORTED;
+}
+
+export fn C_MessageSignInit(handle: cki.CK_SESSION_HANDLE, mechanism: cki.CK_MECHANISM_PTR, key: cki.CK_OBJECT_HANDLE) cki.CK_RV {
+    _ = handle;
+    _ = mechanism;
+    _ = key;
+
+    return cki.CKR_FUNCTION_NOT_SUPPORTED;
+}
+
+export fn C_SignMessage(handle: cki.CK_SESSION_HANDLE, param: cki.CK_VOID_PTR, param_len: cki.CK_ULONG, data: cki.CK_BYTE_PTR, data_len: cki.CK_ULONG, signature: cki.CK_BYTE_PTR, signature_len: cki.CK_ULONG_PTR) cki.CK_RV {
+    _ = handle;
+    _ = param;
+    _ = param_len;
+    _ = signature;
+    _ = signature_len;
+    _ = data;
+    _ = data_len;
+
+    return cki.CKR_FUNCTION_NOT_SUPPORTED;
+}
+
+export fn C_SignMessageBegin(handle: cki.CK_SESSION_HANDLE, param: cki.CK_VOID_PTR, param_len: cki.CK_ULONG) cki.CK_RV {
+    _ = handle;
+    _ = param;
+    _ = param_len;
+
+    return cki.CKR_FUNCTION_NOT_SUPPORTED;
+}
+
+export fn C_SignMessageNext(handle: cki.CK_SESSION_HANDLE, param: cki.CK_VOID_PTR, param_len: cki.CK_ULONG, data: cki.CK_BYTE_PTR, data_len: cki.CK_ULONG, signature: cki.CK_BYTE_PTR, signature_len: cki.CK_ULONG_PTR) cki.CK_RV {
+    _ = handle;
+    _ = param;
+    _ = param_len;
+    _ = signature;
+    _ = signature_len;
+    _ = data;
+    _ = data_len;
+
+    return cki.CKR_FUNCTION_NOT_SUPPORTED;
+}
+
+export fn C_MessageSignFinal(handle: cki.CK_SESSION_HANDLE) cki.CK_RV {
+    _ = handle;
+
+    return cki.CKR_FUNCTION_NOT_SUPPORTED;
+}
+
+export fn C_MessageVerifyInit(handle: cki.CK_SESSION_HANDLE, mechanism: cki.CK_MECHANISM_PTR, key: cki.CK_OBJECT_HANDLE) cki.CK_RV {
+    _ = handle;
+    _ = mechanism;
+    _ = key;
+
+    return cki.CKR_FUNCTION_NOT_SUPPORTED;
+}
+
+export fn C_VerifyMessage(handle: cki.CK_SESSION_HANDLE, param: cki.CK_VOID_PTR, param_len: cki.CK_ULONG, data: cki.CK_BYTE_PTR, data_len: cki.CK_ULONG, signature: cki.CK_BYTE_PTR, signature_len: cki.CK_ULONG) cki.CK_RV {
+    _ = handle;
+    _ = param;
+    _ = param_len;
+    _ = signature;
+    _ = signature_len;
+    _ = data;
+    _ = data_len;
+
+    return cki.CKR_FUNCTION_NOT_SUPPORTED;
+}
+
+export fn C_VerifyMessageBegin(handle: cki.CK_SESSION_HANDLE, param: cki.CK_VOID_PTR, param_len: cki.CK_ULONG) cki.CK_RV {
+    _ = handle;
+    _ = param;
+    _ = param_len;
+
+    return cki.CKR_FUNCTION_NOT_SUPPORTED;
+}
+
+export fn C_VerifyMessageNext(handle: cki.CK_SESSION_HANDLE, param: cki.CK_VOID_PTR, param_len: cki.CK_ULONG, data: cki.CK_BYTE_PTR, data_len: cki.CK_ULONG, signature: cki.CK_BYTE_PTR, signature_len: cki.CK_ULONG) cki.CK_RV {
+    _ = handle;
+    _ = param;
+    _ = param_len;
+    _ = signature;
+    _ = signature_len;
+    _ = data;
+    _ = data_len;
+
+    return cki.CKR_FUNCTION_NOT_SUPPORTED;
+}
+
+export fn C_MessageVerifyFinal(handle: cki.CK_SESSION_HANDLE) cki.CK_RV {
+    _ = handle;
+
+    return cki.CKR_FUNCTION_NOT_SUPPORTED;
 }
