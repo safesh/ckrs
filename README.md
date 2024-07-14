@@ -1,6 +1,6 @@
 # CKRS - Cryptoki Key Retention Service
 
-Use the Linux Kernel's Key Retention Service as a "virtual cryptographic hardware" through the PKCS #11 v3.10 spec. Replacement for the `ssh-agent(1)`.
+Use the [Linux Kernel's Key Retention Service](https://docs.kernel.org/security/keys/core.html) as a "virtual cryptographic hardware" through the PKCS #11 v3.10 spec. Replacement for the `ssh-agent(1)`.
 
 ## Documentation:
 
