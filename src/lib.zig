@@ -36,6 +36,16 @@ var CKRS: struct {
         self.session_bitmap |= @as(u64, 0x01) << @intCast(handle);
     }
 
+    fn session_free(self: *@TypeOf(CKRS), i: u6) bool {
+        return self.session_bitmap & @as(u64, 1) << @intCast(i) == 0;
+    }
+
+    fn get_session(self: *@TypeOf(CKRS), handle: usize) !*Session {
+        if (self.session_free(@intCast(handle))) return error.InvalidSession;
+
+        return &self.sessions[handle];
+    }
+
     fn active_sessions(self: *@TypeOf(CKRS)) usize {
         return @popCount(@bitReverse(self.session_bitmap));
     }
@@ -321,7 +331,8 @@ export fn C_OpenSession(id: cki.CK_SLOT_ID, flags: cki.CK_FLAGS, app: cki.CK_VOI
 
 export fn C_CloseSession(handle: cki.CK_SESSION_HANDLE) callconv(.C) cki.CK_RV {
     debug("C_CloseSession handle = {}", .{handle});
-    const session = &CKRS.sessions[handle];
+
+    const session = CKRS.get_session(handle) catch return cki.CKR_SESSION_HANDLE_INVALID;
 
     session.* = std.mem.zeroInit(Session, .{});
 
@@ -330,7 +341,14 @@ export fn C_CloseSession(handle: cki.CK_SESSION_HANDLE) callconv(.C) cki.CK_RV {
 }
 
 export fn C_CloseAllSessions(slot: cki.CK_SLOT_ID) callconv(.C) cki.CK_RV {
-    _ = slot;
+    if (slot != 1) return cki.CKR_SLOT_ID_INVALID;
+
+    CKRS.session_bitmap = std.math.maxInt(u64);
+
+    for (&CKRS.sessions) |*session| {
+        session.*.object_filter = undefined;
+        session.*.app = undefined;
+    }
 
     return cki.CKR_DEVICE_ERROR;
 }
@@ -447,7 +465,8 @@ export fn C_FindObjectsInit(handle: cki.CK_SESSION_HANDLE, template: cki.CK_ATTR
 export fn C_FindObjects(handle: cki.CK_SESSION_HANDLE, object: cki.CK_OBJECT_HANDLE_PTR, max: cki.CK_ULONG, count: cki.CK_ULONG_PTR) callconv(.C) cki.CK_RV {
     debug("C_FindObjects handle = {} object = {*} max = {},count = {*}\n", .{ handle, object, max, count });
 
-    count.* = 0;
+    object.* = 1;
+    count.* = 1;
 
     return cki.CKR_OK;
 }
@@ -823,7 +842,7 @@ const v3_interface = cki.CK_INTERFACE{
 
 // v3.00+
 
-export fn C_GetInterface(_: cki.CK_UTF8CHAR_PTR, version: cki.CK_VERSION_PTR, interface: cki.CK_INTERFACE_PTR_PTR, flags: cki.CK_FLAGS) cki.CK_RV {
+export fn C_GetInterface(_: cki.CK_UTF8CHAR_PTR, version: cki.CK_VERSION_PTR, interface: cki.CK_INTERFACE_PTR_PTR, flags: cki.CK_FLAGS) callconv(.C) cki.CK_RV {
     if (interface == null) return cki.CKR_ARGUMENTS_BAD;
 
     interface.* = null;
@@ -842,7 +861,7 @@ export fn C_GetInterface(_: cki.CK_UTF8CHAR_PTR, version: cki.CK_VERSION_PTR, in
     return cki.CKR_OK;
 }
 
-export fn C_GetInterfaceList(interfaces: cki.CK_INTERFACE_PTR, count: cki.CK_ULONG_PTR) cki.CK_RV {
+export fn C_GetInterfaceList(interfaces: cki.CK_INTERFACE_PTR, count: cki.CK_ULONG_PTR) callconv(.C) cki.CK_RV {
     if (count == null) return cki.CKR_ARGUMENTS_BAD;
 
     if (interfaces == null) {
@@ -860,7 +879,7 @@ export fn C_GetInterfaceList(interfaces: cki.CK_INTERFACE_PTR, count: cki.CK_ULO
     return cki.CKR_OK;
 }
 
-export fn C_LoginUser(handle: cki.CK_SESSION_HANDLE, kind: cki.CK_USER_TYPE, pin: cki.CK_UTF8CHAR_PTR, len: cki.CK_ULONG, name: cki.CK_UTF8CHAR_PTR, name_len: cki.CK_ULONG) cki.CK_RV {
+export fn C_LoginUser(handle: cki.CK_SESSION_HANDLE, kind: cki.CK_USER_TYPE, pin: cki.CK_UTF8CHAR_PTR, len: cki.CK_ULONG, name: cki.CK_UTF8CHAR_PTR, name_len: cki.CK_ULONG) callconv(.C) cki.CK_RV {
     _ = handle;
     _ = kind;
     _ = pin;
@@ -871,14 +890,14 @@ export fn C_LoginUser(handle: cki.CK_SESSION_HANDLE, kind: cki.CK_USER_TYPE, pin
     return cki.CKR_FUNCTION_NOT_SUPPORTED;
 }
 
-export fn C_SessionCancel(handle: cki.CK_SESSION_HANDLE, flags: cki.CK_FLAGS) cki.CK_RV {
+export fn C_SessionCancel(handle: cki.CK_SESSION_HANDLE, flags: cki.CK_FLAGS) callconv(.C) cki.CK_RV {
     _ = handle;
     _ = flags;
 
     return cki.CKR_FUNCTION_NOT_SUPPORTED;
 }
 
-export fn C_MessageEncryptInit(handle: cki.CK_SESSION_HANDLE, mechanism: cki.CK_MECHANISM_PTR, key: cki.CK_OBJECT_HANDLE) cki.CK_RV {
+export fn C_MessageEncryptInit(handle: cki.CK_SESSION_HANDLE, mechanism: cki.CK_MECHANISM_PTR, key: cki.CK_OBJECT_HANDLE) callconv(.C) cki.CK_RV {
     _ = handle;
     _ = mechanism;
     _ = key;
@@ -886,7 +905,7 @@ export fn C_MessageEncryptInit(handle: cki.CK_SESSION_HANDLE, mechanism: cki.CK_
     return cki.CKR_FUNCTION_NOT_SUPPORTED;
 }
 
-export fn C_EncryptMessage(handle: cki.CK_SESSION_HANDLE, param: cki.CK_VOID_PTR, param_len: cki.CK_ULONG, data: cki.CK_BYTE_PTR, data_len: cki.CK_ULONG, text: cki.CK_BYTE_PTR, text_len: cki.CK_ULONG, cipher: cki.CK_BYTE_PTR, cipher_len: cki.CK_ULONG_PTR) cki.CK_RV {
+export fn C_EncryptMessage(handle: cki.CK_SESSION_HANDLE, param: cki.CK_VOID_PTR, param_len: cki.CK_ULONG, data: cki.CK_BYTE_PTR, data_len: cki.CK_ULONG, text: cki.CK_BYTE_PTR, text_len: cki.CK_ULONG, cipher: cki.CK_BYTE_PTR, cipher_len: cki.CK_ULONG_PTR) callconv(.C) cki.CK_RV {
     _ = handle;
     _ = param;
     _ = param_len;
@@ -900,7 +919,7 @@ export fn C_EncryptMessage(handle: cki.CK_SESSION_HANDLE, param: cki.CK_VOID_PTR
     return cki.CKR_FUNCTION_NOT_SUPPORTED;
 }
 
-export fn C_EncryptMessageBegin(handle: cki.CK_SESSION_HANDLE, param: cki.CK_VOID_PTR, param_len: cki.CK_ULONG, data: cki.CK_BYTE_PTR, data_len: cki.CK_ULONG) cki.CK_RV {
+export fn C_EncryptMessageBegin(handle: cki.CK_SESSION_HANDLE, param: cki.CK_VOID_PTR, param_len: cki.CK_ULONG, data: cki.CK_BYTE_PTR, data_len: cki.CK_ULONG) callconv(.C) cki.CK_RV {
     _ = handle;
     _ = param;
     _ = param_len;
@@ -910,7 +929,7 @@ export fn C_EncryptMessageBegin(handle: cki.CK_SESSION_HANDLE, param: cki.CK_VOI
     return cki.CKR_FUNCTION_NOT_SUPPORTED;
 }
 
-export fn C_EncryptMessageNext(handle: cki.CK_SESSION_HANDLE, param: cki.CK_VOID_PTR, param_len: cki.CK_ULONG, text: cki.CK_BYTE_PTR, text_len: cki.CK_ULONG, cipher: cki.CK_BYTE_PTR, cipher_len: cki.CK_ULONG_PTR, flags: cki.CK_FLAGS) cki.CK_RV {
+export fn C_EncryptMessageNext(handle: cki.CK_SESSION_HANDLE, param: cki.CK_VOID_PTR, param_len: cki.CK_ULONG, text: cki.CK_BYTE_PTR, text_len: cki.CK_ULONG, cipher: cki.CK_BYTE_PTR, cipher_len: cki.CK_ULONG_PTR, flags: cki.CK_FLAGS) callconv(.C) cki.CK_RV {
     _ = handle;
     _ = param;
     _ = param_len;
@@ -923,13 +942,13 @@ export fn C_EncryptMessageNext(handle: cki.CK_SESSION_HANDLE, param: cki.CK_VOID
     return cki.CKR_FUNCTION_NOT_SUPPORTED;
 }
 
-export fn C_MessageEncryptFinal(handle: cki.CK_SESSION_HANDLE) cki.CK_RV {
+export fn C_MessageEncryptFinal(handle: cki.CK_SESSION_HANDLE) callconv(.C) cki.CK_RV {
     _ = handle;
 
     return cki.CKR_FUNCTION_NOT_SUPPORTED;
 }
 
-export fn C_MessageDecryptInit(handle: cki.CK_SESSION_HANDLE, meachanism: cki.CK_MECHANISM_PTR, key: cki.CK_OBJECT_HANDLE) cki.CK_RV {
+export fn C_MessageDecryptInit(handle: cki.CK_SESSION_HANDLE, meachanism: cki.CK_MECHANISM_PTR, key: cki.CK_OBJECT_HANDLE) callconv(.C) cki.CK_RV {
     _ = handle;
     _ = meachanism;
     _ = key;
@@ -937,7 +956,7 @@ export fn C_MessageDecryptInit(handle: cki.CK_SESSION_HANDLE, meachanism: cki.CK
     return cki.CKR_FUNCTION_NOT_SUPPORTED;
 }
 
-fn C_DecryptMessage(handle: cki.CK_SESSION_HANDLE, param: cki.CK_VOID_PTR, param_len: cki.CK_ULONG, data: cki.CK_BYTE_PTR, data_len: cki.CK_ULONG, cipher: cki.CK_BYTE_PTR, cipher_len: cki.CK_ULONG, text: cki.CK_BYTE_PTR, text_len: cki.CK_ULONG_PTR) cki.CK_RV {
+fn C_DecryptMessage(handle: cki.CK_SESSION_HANDLE, param: cki.CK_VOID_PTR, param_len: cki.CK_ULONG, data: cki.CK_BYTE_PTR, data_len: cki.CK_ULONG, cipher: cki.CK_BYTE_PTR, cipher_len: cki.CK_ULONG, text: cki.CK_BYTE_PTR, text_len: cki.CK_ULONG_PTR) callconv(.C) cki.CK_RV {
     _ = handle;
     _ = param;
     _ = param_len;
@@ -951,7 +970,7 @@ fn C_DecryptMessage(handle: cki.CK_SESSION_HANDLE, param: cki.CK_VOID_PTR, param
     return cki.CKR_FUNCTION_NOT_SUPPORTED;
 }
 
-export fn C_DecryptMessageBegin(handle: cki.CK_SESSION_HANDLE, param: cki.CK_VOID_PTR, param_len: cki.CK_ULONG, data: cki.CK_BYTE_PTR, data_len: cki.CK_ULONG) cki.CK_RV {
+export fn C_DecryptMessageBegin(handle: cki.CK_SESSION_HANDLE, param: cki.CK_VOID_PTR, param_len: cki.CK_ULONG, data: cki.CK_BYTE_PTR, data_len: cki.CK_ULONG) callconv(.C) cki.CK_RV {
     _ = handle;
     _ = param;
     _ = param_len;
@@ -961,7 +980,7 @@ export fn C_DecryptMessageBegin(handle: cki.CK_SESSION_HANDLE, param: cki.CK_VOI
     return cki.CKR_FUNCTION_NOT_SUPPORTED;
 }
 
-export fn C_DecryptMessageNext(handle: cki.CK_SESSION_HANDLE, param: cki.CK_VOID_PTR, param_len: cki.CK_ULONG, cipher: cki.CK_BYTE_PTR, cipher_len: cki.CK_ULONG, text: cki.CK_BYTE_PTR, text_len: cki.CK_ULONG_PTR, flags: cki.CK_FLAGS) cki.CK_RV {
+export fn C_DecryptMessageNext(handle: cki.CK_SESSION_HANDLE, param: cki.CK_VOID_PTR, param_len: cki.CK_ULONG, cipher: cki.CK_BYTE_PTR, cipher_len: cki.CK_ULONG, text: cki.CK_BYTE_PTR, text_len: cki.CK_ULONG_PTR, flags: cki.CK_FLAGS) callconv(.C) cki.CK_RV {
     _ = handle;
     _ = param;
     _ = param_len;
@@ -974,59 +993,13 @@ export fn C_DecryptMessageNext(handle: cki.CK_SESSION_HANDLE, param: cki.CK_VOID
     return cki.CKR_FUNCTION_NOT_SUPPORTED;
 }
 
-export fn C_MessageDecryptFinal(handle: cki.CK_SESSION_HANDLE) cki.CK_RV {
+export fn C_MessageDecryptFinal(handle: cki.CK_SESSION_HANDLE) callconv(.C) cki.CK_RV {
     _ = handle;
 
     return cki.CKR_FUNCTION_NOT_SUPPORTED;
 }
 
-export fn C_MessageSignInit(handle: cki.CK_SESSION_HANDLE, mechanism: cki.CK_MECHANISM_PTR, key: cki.CK_OBJECT_HANDLE) cki.CK_RV {
-    _ = handle;
-    _ = mechanism;
-    _ = key;
-
-    return cki.CKR_FUNCTION_NOT_SUPPORTED;
-}
-
-export fn C_SignMessage(handle: cki.CK_SESSION_HANDLE, param: cki.CK_VOID_PTR, param_len: cki.CK_ULONG, data: cki.CK_BYTE_PTR, data_len: cki.CK_ULONG, signature: cki.CK_BYTE_PTR, signature_len: cki.CK_ULONG_PTR) cki.CK_RV {
-    _ = handle;
-    _ = param;
-    _ = param_len;
-    _ = signature;
-    _ = signature_len;
-    _ = data;
-    _ = data_len;
-
-    return cki.CKR_FUNCTION_NOT_SUPPORTED;
-}
-
-export fn C_SignMessageBegin(handle: cki.CK_SESSION_HANDLE, param: cki.CK_VOID_PTR, param_len: cki.CK_ULONG) cki.CK_RV {
-    _ = handle;
-    _ = param;
-    _ = param_len;
-
-    return cki.CKR_FUNCTION_NOT_SUPPORTED;
-}
-
-export fn C_SignMessageNext(handle: cki.CK_SESSION_HANDLE, param: cki.CK_VOID_PTR, param_len: cki.CK_ULONG, data: cki.CK_BYTE_PTR, data_len: cki.CK_ULONG, signature: cki.CK_BYTE_PTR, signature_len: cki.CK_ULONG_PTR) cki.CK_RV {
-    _ = handle;
-    _ = param;
-    _ = param_len;
-    _ = signature;
-    _ = signature_len;
-    _ = data;
-    _ = data_len;
-
-    return cki.CKR_FUNCTION_NOT_SUPPORTED;
-}
-
-export fn C_MessageSignFinal(handle: cki.CK_SESSION_HANDLE) cki.CK_RV {
-    _ = handle;
-
-    return cki.CKR_FUNCTION_NOT_SUPPORTED;
-}
-
-export fn C_MessageVerifyInit(handle: cki.CK_SESSION_HANDLE, mechanism: cki.CK_MECHANISM_PTR, key: cki.CK_OBJECT_HANDLE) cki.CK_RV {
+export fn C_MessageSignInit(handle: cki.CK_SESSION_HANDLE, mechanism: cki.CK_MECHANISM_PTR, key: cki.CK_OBJECT_HANDLE) callconv(.C) cki.CK_RV {
     _ = handle;
     _ = mechanism;
     _ = key;
@@ -1034,7 +1007,7 @@ export fn C_MessageVerifyInit(handle: cki.CK_SESSION_HANDLE, mechanism: cki.CK_M
     return cki.CKR_FUNCTION_NOT_SUPPORTED;
 }
 
-export fn C_VerifyMessage(handle: cki.CK_SESSION_HANDLE, param: cki.CK_VOID_PTR, param_len: cki.CK_ULONG, data: cki.CK_BYTE_PTR, data_len: cki.CK_ULONG, signature: cki.CK_BYTE_PTR, signature_len: cki.CK_ULONG) cki.CK_RV {
+export fn C_SignMessage(handle: cki.CK_SESSION_HANDLE, param: cki.CK_VOID_PTR, param_len: cki.CK_ULONG, data: cki.CK_BYTE_PTR, data_len: cki.CK_ULONG, signature: cki.CK_BYTE_PTR, signature_len: cki.CK_ULONG_PTR) callconv(.C) cki.CK_RV {
     _ = handle;
     _ = param;
     _ = param_len;
@@ -1046,7 +1019,7 @@ export fn C_VerifyMessage(handle: cki.CK_SESSION_HANDLE, param: cki.CK_VOID_PTR,
     return cki.CKR_FUNCTION_NOT_SUPPORTED;
 }
 
-export fn C_VerifyMessageBegin(handle: cki.CK_SESSION_HANDLE, param: cki.CK_VOID_PTR, param_len: cki.CK_ULONG) cki.CK_RV {
+export fn C_SignMessageBegin(handle: cki.CK_SESSION_HANDLE, param: cki.CK_VOID_PTR, param_len: cki.CK_ULONG) callconv(.C) cki.CK_RV {
     _ = handle;
     _ = param;
     _ = param_len;
@@ -1054,7 +1027,7 @@ export fn C_VerifyMessageBegin(handle: cki.CK_SESSION_HANDLE, param: cki.CK_VOID
     return cki.CKR_FUNCTION_NOT_SUPPORTED;
 }
 
-export fn C_VerifyMessageNext(handle: cki.CK_SESSION_HANDLE, param: cki.CK_VOID_PTR, param_len: cki.CK_ULONG, data: cki.CK_BYTE_PTR, data_len: cki.CK_ULONG, signature: cki.CK_BYTE_PTR, signature_len: cki.CK_ULONG) cki.CK_RV {
+export fn C_SignMessageNext(handle: cki.CK_SESSION_HANDLE, param: cki.CK_VOID_PTR, param_len: cki.CK_ULONG, data: cki.CK_BYTE_PTR, data_len: cki.CK_ULONG, signature: cki.CK_BYTE_PTR, signature_len: cki.CK_ULONG_PTR) callconv(.C) cki.CK_RV {
     _ = handle;
     _ = param;
     _ = param_len;
@@ -1066,7 +1039,53 @@ export fn C_VerifyMessageNext(handle: cki.CK_SESSION_HANDLE, param: cki.CK_VOID_
     return cki.CKR_FUNCTION_NOT_SUPPORTED;
 }
 
-export fn C_MessageVerifyFinal(handle: cki.CK_SESSION_HANDLE) cki.CK_RV {
+export fn C_MessageSignFinal(handle: cki.CK_SESSION_HANDLE) callconv(.C) cki.CK_RV {
+    _ = handle;
+
+    return cki.CKR_FUNCTION_NOT_SUPPORTED;
+}
+
+export fn C_MessageVerifyInit(handle: cki.CK_SESSION_HANDLE, mechanism: cki.CK_MECHANISM_PTR, key: cki.CK_OBJECT_HANDLE) callconv(.C) cki.CK_RV {
+    _ = handle;
+    _ = mechanism;
+    _ = key;
+
+    return cki.CKR_FUNCTION_NOT_SUPPORTED;
+}
+
+export fn C_VerifyMessage(handle: cki.CK_SESSION_HANDLE, param: cki.CK_VOID_PTR, param_len: cki.CK_ULONG, data: cki.CK_BYTE_PTR, data_len: cki.CK_ULONG, signature: cki.CK_BYTE_PTR, signature_len: cki.CK_ULONG) callconv(.C) cki.CK_RV {
+    _ = handle;
+    _ = param;
+    _ = param_len;
+    _ = signature;
+    _ = signature_len;
+    _ = data;
+    _ = data_len;
+
+    return cki.CKR_FUNCTION_NOT_SUPPORTED;
+}
+
+export fn C_VerifyMessageBegin(handle: cki.CK_SESSION_HANDLE, param: cki.CK_VOID_PTR, param_len: cki.CK_ULONG) callconv(.C) cki.CK_RV {
+    _ = handle;
+    _ = param;
+    _ = param_len;
+
+    return cki.CKR_FUNCTION_NOT_SUPPORTED;
+}
+
+export fn C_VerifyMessageNext(handle: cki.CK_SESSION_HANDLE, param: cki.CK_VOID_PTR, param_len: cki.CK_ULONG, data: cki.CK_BYTE_PTR, data_len: cki.CK_ULONG, signature: cki.CK_BYTE_PTR, signature_len: cki.CK_ULONG) callconv(.C) cki.CK_RV {
+    _ = handle;
+    _ = param;
+    _ = param_len;
+    _ = signature;
+    _ = signature_len;
+    _ = data;
+    _ = data_len;
+
+    return cki.CKR_FUNCTION_NOT_SUPPORTED;
+}
+
+export fn C_MessageVerifyFinal(handle: cki.CK_SESSION_HANDLE) callconv(.C) cki.CK_RV {
     _ = handle;
 
     return cki.CKR_FUNCTION_NOT_SUPPORTED;

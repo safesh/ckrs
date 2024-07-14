@@ -14,7 +14,7 @@ docker: ca
 	docker run -d -p 2222:22 --name ckrs-ssh-test ckrs-ssh-test
 
 ssh:
-	ssh -o CertificateFile=./user/user_key-cert.pub -i ./user/user_key root@localhost -p 2222
+	ssh -I ../zig-out/lib/libcryptokikrs.so root@localhost -p 2222
 
 clean:
 	$(RM) -r user/ ca/
