@@ -7,4 +7,4 @@ usage () {
 
 ! [ $# -ne 1 ] || usage
 
-ssh-keygen -D "$1" -e
+ssh-keygen -v -D "$1" -e

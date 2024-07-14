@@ -8,46 +8,69 @@ const cki = @cImport({
 });
 
 const debug = std.debug.print;
+const assert = std.debug.assert;
 
-var Arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+const Template = struct {
+    attr: *cki.CK_ATTRIBUTE,
+    len: usize,
+};
+
+const Session = struct { rw: bool, app: []const u8, object_filter: ?Template = undefined };
 
 var CKRS: struct {
     initialized: bool = false,
-    session_counter: usize = 0,
-    sessions: std.ArrayList(usize),
-    rw_session_counter: usize = 0,
-    rw_sessions: std.ArrayList(usize),
+    session_bitmap: u64 = std.math.maxInt(u64),
+    sessions: [64]Session,
 
     fn new_session(self: *@TypeOf(CKRS)) !usize {
-        // TODO: Check if we don't overlap
+        const handle = try ffs(self.session_bitmap);
 
-        debug("new_session \n", .{});
+        self.session_bitmap &= ~(@as(u64, 0x01) << handle);
 
-        const session = self.session_counter;
-
-        self.session_counter += 1;
-
-        try self.sessions.append(session);
-
-        return session;
+        return handle;
     }
 
-    fn new_rw_session(self: *@TypeOf(CKRS)) !usize {
-        // TODO: Check if we don't overlap
+    fn close_session(self: *@TypeOf(CKRS), handle: usize) void {
+        assert((self.session_bitmap >> @intCast(handle)) & @as(u64, 1) == 0);
 
-        debug("new_rw_session \n", .{});
-        const session = self.rw_session_counter;
+        self.session_bitmap |= @as(u64, 0x01) << @intCast(handle);
+    }
 
-        self.rw_session_counter += 1;
-
-        try self.rw_sessions.append(session);
-
-        return session;
+    fn active_sessions(self: *@TypeOf(CKRS)) usize {
+        return @popCount(@bitReverse(self.session_bitmap));
     }
 } = .{
-    .sessions = std.ArrayList(usize).init(Arena.allocator()),
-    .rw_sessions = std.ArrayList(usize).init(Arena.allocator()),
+    .sessions = undefined,
 };
+
+test "test_open_and_close_all_sessions" {
+    for (0..@bitSizeOf(u64)) |_| {
+        _ = try CKRS.new_session();
+    }
+
+    for (0..@bitSizeOf(u64)) |i| {
+        CKRS.close_session(i);
+    }
+}
+
+// FIXME: Replace with compiler builtin
+fn ffs(n: u64) !u6 {
+    for (0..@bitSizeOf(u64)) |i| {
+        if (n & @as(u64, 1) << @intCast(i) != 0) {
+            return @intCast(i);
+        }
+    }
+
+    return error.Full;
+}
+
+test "test_ffs_all_valid" {
+    for (0..64) |i| {
+        const ret = try ffs(@as(u64, 0x01) << @intCast(i));
+
+        assert(ret == i);
+    }
+}
 
 fn make_fn_list(comptime T: type, version: cki.CK_VERSION) T {
     const meta = @import("std").meta;
@@ -85,7 +108,7 @@ fn make_padded_string(comptime str: []const u8, comptime size: usize) [size]u8 {
 
 const manufacturer = make_padded_string("safesh", 32);
 const description = make_padded_string("Cryptoki Key Retention Service", 32);
-const slot_description = make_padded_string("Virtual, In Kernel Slot", 64);
+const slot_description = make_padded_string("Key Retention Service Slot", 64);
 
 // TODO: Define this through the build system.
 const ver_major = 0;
@@ -112,6 +135,14 @@ export fn C_Initialize(args: cki.CK_C_INITIALIZE_ARGS_PTR) callconv(.C) cki.CK_R
 export fn C_Finalize(_: cki.CK_VOID_PTR) callconv(.C) cki.CK_RV {
     debug("C_Finalize\n", .{});
 
+    CKRS.session_bitmap = std.math.maxInt(u64);
+
+    for (&CKRS.sessions) |*session| {
+        session.object_filter = undefined;
+        session.rw = false;
+        session.app = undefined;
+    }
+
     return cki.CKR_OK;
 }
 
@@ -128,7 +159,7 @@ export fn C_GetInfo(info: cki.CK_INFO_PTR) callconv(.C) cki.CK_RV {
     info.*.libraryVersion.minor = ver_minor;
 
     info.*.cryptokiVersion.major = 3;
-    info.*.cryptokiVersion.minor = 0;
+    info.*.cryptokiVersion.minor = 10;
 
     return cki.CKR_OK;
 }
@@ -196,16 +227,16 @@ export fn C_GetTokenInfo(id: cki.CK_SLOT_ID, info: cki.CK_TOKEN_INFO_PTR) callco
     info.*.flags = if (CKRS.initialized) cki.CKF_TOKEN_INITIALIZED else 0 | cki.CKF_USER_PIN_INITIALIZED | cki.CKF_PROTECTED_AUTHENTICATION_PATH;
 
     // Maximum number of sessions that can be opened with the token at one time by a single application.
-    info.*.ulMaxSessionCount = cki.CK_EFFECTIVELY_INFINITE;
+    info.*.ulMaxSessionCount = @sizeOf(u64);
 
     // Number of sessions that this application currently has open with the token
-    info.*.ulSessionCount = CKRS.sessions.items.len;
+    info.*.ulSessionCount = CKRS.active_sessions();
 
     // Maximum number of read/write sessions that can be opened with the token at one time by a single application
-    info.*.ulMaxRwSessionCount = cki.CK_EFFECTIVELY_INFINITE;
+    info.*.ulMaxRwSessionCount = @sizeOf(u64);
 
     // Number of read/write sessions that this application currently has open with the token
-    info.*.ulRwSessionCount = CKRS.rw_sessions.items.len;
+    info.*.ulRwSessionCount = CKRS.active_sessions();
 
     // Maximum length in bytes of the PIN
     info.*.ulMaxPinLen = 256;
@@ -274,20 +305,28 @@ export fn C_OpenSession(id: cki.CK_SLOT_ID, flags: cki.CK_FLAGS, app: cki.CK_VOI
 
     if ((flags & cki.CKF_SERIAL_SESSION) == 0) return cki.CKR_SESSION_PARALLEL_NOT_SUPPORTED;
 
-    const session = if (flags & cki.CKF_RW_SESSION == 0)
-        CKRS.new_session()
-    else
-        CKRS.new_rw_session();
+    const h = CKRS.new_session();
+    handle.* = h catch return cki.CKR_DEVICE_ERROR;
 
-    handle.* = session catch return cki.CKR_DEVICE_ERROR;
+    var session = &CKRS.sessions[handle.*];
+
+    session.rw = flags & cki.CKF_RW_SESSION != 0;
+
+    if (app != null) {
+        // TODO:
+    }
 
     return cki.CKR_OK;
 }
 
 export fn C_CloseSession(handle: cki.CK_SESSION_HANDLE) callconv(.C) cki.CK_RV {
-    _ = handle;
+    debug("C_CloseSession handle = {}", .{handle});
+    const session = &CKRS.sessions[handle];
 
-    return cki.CKR_DEVICE_ERROR;
+    session.* = std.mem.zeroInit(Session, .{});
+
+    CKRS.close_session(handle);
+    return cki.CKR_OK;
 }
 
 export fn C_CloseAllSessions(slot: cki.CK_SLOT_ID) callconv(.C) cki.CK_RV {
@@ -370,12 +409,16 @@ export fn C_GetObjectSize(handle: cki.CK_SESSION_HANDLE, object: cki.CK_OBJECT_H
 }
 
 export fn C_GetAttributeValue(handle: cki.CK_SESSION_HANDLE, object: cki.CK_OBJECT_HANDLE, template: cki.CK_ATTRIBUTE_PTR, count: cki.CK_ULONG) callconv(.C) cki.CK_RV {
-    _ = handle;
-    _ = object;
-    _ = template;
-    _ = count;
+    debug("C_GetAttributeValue handle = {}, object = {}, template = {*}, count = {}\n", .{ handle, object, template, count });
 
-    return cki.CKR_DEVICE_ERROR;
+    for (0..count) |i| {
+        debug("---------------------\n", .{});
+        debug("attr type = {}\n", .{template[i].type});
+        debug("len = {}\n", .{template[i].ulValueLen});
+        // debug("class = {}\n", .{@as(*c_ulong, @ptrCast(@alignCast(template[i].pValue))).*});
+    }
+
+    return cki.CKR_OK;
 }
 
 export fn C_SetAttributeValue(handle: cki.CK_SESSION_HANDLE, object: cki.CK_OBJECT_HANDLE, template: cki.CK_ATTRIBUTE_PTR, count: cki.CK_ULONG) callconv(.C) cki.CK_RV {
@@ -388,26 +431,33 @@ export fn C_SetAttributeValue(handle: cki.CK_SESSION_HANDLE, object: cki.CK_OBJE
 }
 
 export fn C_FindObjectsInit(handle: cki.CK_SESSION_HANDLE, template: cki.CK_ATTRIBUTE_PTR, count: cki.CK_ULONG) callconv(.C) cki.CK_RV {
-    _ = handle;
-    _ = template;
-    _ = count;
+    debug("C_FindObjectsInit handle = {} template = {*} count = {}\n", .{ handle, template, count });
 
-    return cki.CKR_DEVICE_ERROR;
+    for (0..count) |i| {
+        debug("type = {}\n", .{template[i].type});
+        debug("len = {}\n", .{template[i].ulValueLen});
+        debug("class = {}\n", .{@as(*c_ulong, @ptrCast(@alignCast(template[i].pValue))).*});
+    }
+
+    CKRS.sessions[handle].object_filter = .{ .attr = template, .len = count };
+
+    return cki.CKR_OK;
 }
 
 export fn C_FindObjects(handle: cki.CK_SESSION_HANDLE, object: cki.CK_OBJECT_HANDLE_PTR, max: cki.CK_ULONG, count: cki.CK_ULONG_PTR) callconv(.C) cki.CK_RV {
-    _ = handle;
-    _ = max;
-    _ = object;
-    _ = count;
+    debug("C_FindObjects handle = {} object = {*} max = {},count = {*}\n", .{ handle, object, max, count });
 
-    return cki.CKR_DEVICE_ERROR;
+    count.* = 0;
+
+    return cki.CKR_OK;
 }
 
 export fn C_FindObjectsFinal(handle: cki.CK_SESSION_HANDLE) callconv(.C) cki.CK_RV {
-    _ = handle;
+    debug("C_FindObjectsFinal handle = {}\n", .{handle});
 
-    return cki.CKR_DEVICE_ERROR;
+    CKRS.sessions[handle].object_filter = undefined;
+
+    return cki.CKR_OK;
 }
 
 export fn C_EncryptInit(handle: cki.CK_SESSION_HANDLE, mechanism: cki.CK_MECHANISM_PTR, key: cki.CK_OBJECT_HANDLE) callconv(.C) cki.CK_RV {
