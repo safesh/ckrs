@@ -10,48 +10,48 @@ const cki = @cImport({
 const debug = std.debug.print;
 const assert = std.debug.assert;
 
+const BitSet = std.bit_set.IntegerBitSet(64);
+
 const Template = struct {
     attr: *cki.CK_ATTRIBUTE,
     len: usize,
+    total: usize = 1,
+};
+
+const Context = struct {
+    objects: []cki.CK_OBJECT_HANDLE,
 };
 
 const Session = struct { rw: bool, app: []const u8, object_filter: ?Template = undefined };
 
 var CKRS: struct {
     initialized: bool = false,
-    session_bitmap: u64 = std.math.maxInt(u64),
+    handles: BitSet = BitSet.initFull(),
     sessions: [64]Session,
 
     fn new_session(self: *@TypeOf(CKRS)) !usize {
-        const handle = try ffs(self.session_bitmap);
+        if (self.handles.toggleFirstSet()) |handle|
+            return handle;
 
-        self.session_bitmap &= ~(@as(u64, 0x01) << handle);
-
-        return handle;
+        return error.SessionsFull;
     }
 
-    fn close_session(self: *@TypeOf(CKRS), handle: usize) void {
-        assert((self.session_bitmap >> @intCast(handle)) & @as(u64, 1) == 0);
+    fn close_session(self: *@TypeOf(CKRS), handle: usize) !void {
+        if (self.handles.isSet(handle)) return error.InvalidHandle;
 
-        self.session_bitmap |= @as(u64, 0x01) << @intCast(handle);
-    }
-
-    fn session_free(self: *@TypeOf(CKRS), i: u6) bool {
-        return self.session_bitmap & @as(u64, 1) << @intCast(i) == 0;
+        self.handles.set(handle);
     }
 
     fn get_session(self: *@TypeOf(CKRS), handle: usize) !*Session {
-        if (self.session_free(@intCast(handle))) return error.InvalidSession;
+        if (self.handles.isSet(handle)) return error.InvalidHandle;
 
         return &self.sessions[handle];
     }
 
     fn active_sessions(self: *@TypeOf(CKRS)) usize {
-        return @popCount(@bitReverse(self.session_bitmap));
+        return 64 - self.handles.count();
     }
-} = .{
-    .sessions = undefined,
-};
+} = .{ .sessions = std.mem.zeroes([64]Session) };
 
 test "test_open_and_close_all_sessions" {
     for (0..@bitSizeOf(u64)) |_| {
@@ -59,7 +59,7 @@ test "test_open_and_close_all_sessions" {
     }
 
     for (0..@bitSizeOf(u64)) |i| {
-        CKRS.close_session(i);
+        try CKRS.close_session(i);
     }
 }
 
@@ -145,7 +145,7 @@ export fn C_Initialize(args: cki.CK_C_INITIALIZE_ARGS_PTR) callconv(.C) cki.CK_R
 export fn C_Finalize(_: cki.CK_VOID_PTR) callconv(.C) cki.CK_RV {
     debug("C_Finalize\n", .{});
 
-    CKRS.session_bitmap = std.math.maxInt(u64);
+    CKRS.handles = BitSet.initFull();
 
     for (&CKRS.sessions) |*session| {
         session.object_filter = undefined;
@@ -336,14 +336,15 @@ export fn C_CloseSession(handle: cki.CK_SESSION_HANDLE) callconv(.C) cki.CK_RV {
 
     session.* = std.mem.zeroInit(Session, .{});
 
-    CKRS.close_session(handle);
+    CKRS.close_session(handle) catch return cki.CKR_SESSION_HANDLE_INVALID;
+
     return cki.CKR_OK;
 }
 
 export fn C_CloseAllSessions(slot: cki.CK_SLOT_ID) callconv(.C) cki.CK_RV {
     if (slot != 1) return cki.CKR_SLOT_ID_INVALID;
 
-    CKRS.session_bitmap = std.math.maxInt(u64);
+    CKRS.handles = BitSet.initFull();
 
     for (&CKRS.sessions) |*session| {
         session.*.object_filter = undefined;
@@ -430,10 +431,33 @@ export fn C_GetAttributeValue(handle: cki.CK_SESSION_HANDLE, object: cki.CK_OBJE
     debug("C_GetAttributeValue handle = {}, object = {}, template = {*}, count = {}\n", .{ handle, object, template, count });
 
     for (0..count) |i| {
-        debug("---------------------\n", .{});
-        debug("attr type = {}\n", .{template[i].type});
-        debug("len = {}\n", .{template[i].ulValueLen});
-        // debug("class = {}\n", .{@as(*c_ulong, @ptrCast(@alignCast(template[i].pValue))).*});
+        if (template[i].type == cki.CKA_KEY_TYPE) {
+            debug("---------------------\n", .{});
+            debug("attr type = {x}\n", .{template[i].type});
+            debug("len = {}\n", .{template[i].ulValueLen});
+            debug("class = {}\n", .{@as(*c_ulong, @ptrCast(@alignCast(template[i].pValue))).*});
+
+            const key_type = @as(*c_ulong, @ptrCast(@alignCast(template[i].pValue)));
+
+            key_type.* = cki.CKK_ECDSA;
+        } else if (template[i].type == cki.CKA_LABEL) {
+            if (template[i].pValue == null) {
+                std.debug.panic("pValue is null", .{});
+            } else {
+                const value = @as([*]u8, @ptrCast(template[i].pValue))[0..template[i].ulValueLen];
+                for (0..template[i].ulValueLen) |j| {
+                    debug("{}", .{value[j]});
+                }
+
+                std.mem.copyForwards(u8, value, "key1");
+
+                for (0..template[i].ulValueLen) |j| {
+                    debug("{}", .{value[j]});
+                }
+
+                debug("\n", .{});
+            }
+        }
     }
 
     return cki.CKR_OK;
@@ -465,8 +489,20 @@ export fn C_FindObjectsInit(handle: cki.CK_SESSION_HANDLE, template: cki.CK_ATTR
 export fn C_FindObjects(handle: cki.CK_SESSION_HANDLE, object: cki.CK_OBJECT_HANDLE_PTR, max: cki.CK_ULONG, count: cki.CK_ULONG_PTR) callconv(.C) cki.CK_RV {
     debug("C_FindObjects handle = {} object = {*} max = {},count = {*}\n", .{ handle, object, max, count });
 
-    object.* = 1;
-    count.* = 1;
+    const session = CKRS.get_session(handle) catch return cki.CKR_SESSION_HANDLE_INVALID;
+
+    if (session.*.object_filter) |*filter| {
+        if (filter.*.total != 0) {
+            object.* = 1;
+            count.* = 1;
+
+            filter.*.total = 0;
+        } else {
+            count.* = 0;
+        }
+    } else {
+        count.* = 0;
+    }
 
     return cki.CKR_OK;
 }
